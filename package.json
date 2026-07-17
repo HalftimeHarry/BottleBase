@@ -23,6 +23,7 @@
 		"auth:schema": "better-auth generate --config src/lib/server/auth.ts --output src/lib/infrastructure/db/auth.schema.ts --yes",
 		"images:migrate": "node --env-file=.env scripts/migrate-bottle-images-to-pocketbase.mjs",
 		"images:migrate:dry": "node --env-file=.env scripts/migrate-bottle-images-to-pocketbase.mjs --dry-run",
+		"images:repair-collection": "node --env-file=.env scripts/repair-bottle-images-collection.mjs",
 		"images:cleanup": "node --env-file=.env scripts/cleanup-migrated-bottle-images.mjs",
 		"images:cleanup:dry": "node --env-file=.env scripts/cleanup-migrated-bottle-images.mjs --dry-run"
 	},

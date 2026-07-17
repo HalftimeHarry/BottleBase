@@ -15,6 +15,36 @@ const adminPassword = process.env.POCKETBASE_ADMIN_PASSWORD;
 const collection = process.env.POCKETBASE_IMAGE_COLLECTION ?? 'bottle_images';
 const dryRun = process.argv.includes('--dry-run');
 
+const REQUIRED_FIELDS = [
+	{
+		name: 'name',
+		type: 'text',
+		required: true,
+		presentable: true,
+		max: 255
+	},
+	{
+		name: 'slug',
+		type: 'text',
+		required: true,
+		presentable: true,
+		max: 255
+	},
+	{
+		name: 'image',
+		type: 'file',
+		required: true,
+		presentable: true,
+		options: {
+			maxSelect: 1,
+			maxSize: 52428800,
+			mimeTypes: ['image/png', 'image/jpeg', 'image/webp'],
+			thumbs: [],
+			protected: false
+		}
+	}
+];
+
 function extensionToMime(filename) {
 	const extension = path.extname(filename).toLowerCase();
 	if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
@@ -109,7 +139,13 @@ async function main() {
 
 async function ensureCollection(pb) {
 	try {
-		await pb.collections.getOne(collection);
+		const existing = await pb.collections.getOne(collection);
+		const existingNames = new Set((existing.fields ?? []).map((field) => field.name));
+		const missingRequiredFields = REQUIRED_FIELDS.some((field) => !existingNames.has(field.name));
+		if (missingRequiredFields) {
+			console.log(`Collection ${collection} exists but is missing fields, repairing it...`);
+			await pb.collections.update(existing.id, { fields: REQUIRED_FIELDS });
+		}
 		return;
 	} catch (error) {
 		const status =
@@ -129,35 +165,7 @@ async function ensureCollection(pb) {
 	await pb.collections.create({
 		name: collection,
 		type: 'base',
-		schema: [
-			{
-				name: 'name',
-				type: 'text',
-				required: true,
-				presentable: true,
-				max: 255
-			},
-			{
-				name: 'slug',
-				type: 'text',
-				required: true,
-				presentable: true,
-				max: 255
-			},
-			{
-				name: 'image',
-				type: 'file',
-				required: true,
-				presentable: true,
-				options: {
-					maxSelect: 1,
-					maxSize: 52428800,
-					mimeTypes: ['image/png', 'image/jpeg', 'image/webp'],
-					thumbs: [],
-					protected: false
-				}
-			}
-		]
+		fields: REQUIRED_FIELDS
 	});
 }
 
