@@ -24,6 +24,9 @@
 		"images:migrate": "node --env-file=.env scripts/migrate-bottle-images-to-pocketbase.mjs",
 		"images:migrate:dry": "node --env-file=.env scripts/migrate-bottle-images-to-pocketbase.mjs --dry-run",
 		"images:repair-collection": "node --env-file=.env scripts/repair-bottle-images-collection.mjs",
+		"bottles:setup": "node --env-file=.env scripts/setup-bottle-collections.mjs",
+		"catalog:seed-sections": "node --env-file=.env scripts/seed-catalog-sections.mjs",
+		"bottles:seed-from-images": "node --env-file=.env scripts/seed-bottles-from-images.mjs",
 		"images:cleanup": "node --env-file=.env scripts/cleanup-migrated-bottle-images.mjs",
 		"images:cleanup:dry": "node --env-file=.env scripts/cleanup-migrated-bottle-images.mjs --dry-run"
 	},
