@@ -4,6 +4,7 @@
 	let { data, form } = $props<{
 		data: {
 			bottles: Array<{ id: string; name: string; brand: string; category: string }>;
+			images: Array<{ id: string; name: string; slug: string }>;
 			bars: Array<{
 				id: string;
 				name: string;
@@ -17,6 +18,13 @@
 			selectedBarId: string;
 			selectedStorageFilter: string;
 			selectedBarStorageTypes: string[];
+			stockUpdated: boolean;
+			generatedCount: number;
+			addedCount: number;
+			storageAddedCount: number;
+			bottleAddedCount: number;
+			updatedBarBottleId: string;
+			rowStatus: string;
 			selectedBarBottles: Array<{
 				id: string;
 				barId: string;
@@ -34,7 +42,12 @@
 			}>;
 			setupError: string | null;
 		};
-		form?: { error?: string; fieldErrors?: Record<string, string> };
+		form?: {
+			error?: string;
+			fieldErrors?: Record<string, string>;
+			updatedBarBottleId?: string;
+			rowStatus?: string;
+		};
 	}>();
 
 	type StorageAreaType = 'well' | 'backbar' | 'cold-storage' | 'overflow';
@@ -123,7 +136,13 @@
 	let defaultReorder = $state(profileDefaults['full-service'].reorder);
 	let selectedBottleIds = $state<string[]>([]);
 	let stockByBottle = $state<Record<string, StockValues>>({});
+	let editingRows = $state<Record<string, boolean>>({});
 	let wizardForm = $state<HTMLFormElement | null>(null);
+	let showAddBottleModal = $state(false);
+	let duplicateFromBarBottleId = $state('');
+	let duplicateFromBottleLabel = $state('');
+	let addBottleLocation = $state('Bar');
+	let addBottleLocationType = $state<StorageAreaType>('well');
 
 	function addStorageArea(): void {
 		storageAreas = [...storageAreas, { id: nextAreaId(), name: '', type: 'backbar' }];
@@ -257,6 +276,54 @@
 		if (step === 2 && step2Complete) {
 			step = 3;
 		}
+	}
+
+	function openAddBottleModal(source: {
+		barBottleId: string;
+		label: string;
+		location: string;
+		locationType: StorageAreaType;
+	}): void {
+		duplicateFromBarBottleId = source.barBottleId;
+		duplicateFromBottleLabel = source.label;
+		addBottleLocation = source.location;
+		addBottleLocationType = source.locationType;
+		showAddBottleModal = true;
+	}
+
+	function closeAddBottleModal(): void {
+		duplicateFromBarBottleId = '';
+		duplicateFromBottleLabel = '';
+		showAddBottleModal = false;
+	}
+
+	function isEditingRow(rowId: string): boolean {
+		return Boolean(editingRows[rowId]);
+	}
+
+	function startEditingRow(rowId: string): void {
+		editingRows = { ...editingRows, [rowId]: true };
+	}
+
+	function stopEditingRow(rowId: string): void {
+		const next = { ...editingRows };
+		delete next[rowId];
+		editingRows = next;
+	}
+
+	function locationTypeLabel(value: string): string {
+		const option = LOCATION_TYPE_OPTIONS.find((candidate) => candidate.value === value);
+		return option?.label ?? value;
+	}
+
+	function inventoryModeLabel(value: string): string {
+		if (value === 'disabled') {
+			return 'Disabled';
+		}
+		if (value === 'detailed-tracking') {
+			return 'Detailed';
+		}
+		return 'Simple';
 	}
 
 	async function focusFirstInvalidField(errorKey: string): Promise<void> {
@@ -415,6 +482,26 @@
 
 		{#if form?.error}
 			<p class="notice notice-error">{form.error}</p>
+		{/if}
+
+		{#if data.stockUpdated}
+			<p class="notice">Saved changes to bottle counts and area settings.</p>
+		{/if}
+
+		{#if data.generatedCount > 0}
+			<p class="notice">Generated counts for {data.generatedCount} bottle(s).</p>
+		{/if}
+
+		{#if data.addedCount > 0}
+			<p class="notice">Duplicated bottle into the selected Area and Type.</p>
+		{/if}
+
+		{#if data.storageAddedCount > 0}
+			<p class="notice">Added bottle to Storage / Overflow.</p>
+		{/if}
+
+		{#if data.bottleAddedCount > 0}
+			<p class="notice">Added bottle to this bar.</p>
 		{/if}
 
 		<form method="POST" action="?/createAndStock" class="wizard" bind:this={wizardForm}>
@@ -765,7 +852,27 @@
 									<td data-label="Profile">{bar.stockingProfile || 'custom'}</td>
 									<td data-label="Stocked bottles">{bar.stockedCount}</td>
 									<td data-label="Manage">
-										<a class="table-link" href={`/dashboard/bars?bar=${bar.id}`}>Manage</a>
+										<div class="manage-actions">
+											<a class="table-link" href={`/dashboard/bars?bar=${bar.id}`}>Manage</a>
+											<form
+												method="POST"
+												action="?/deleteBar"
+												onsubmit={(event) => {
+													if (
+														!confirm(
+															`Delete ${bar.name}? This cannot be undone and removes stocked bottle records.`
+														)
+													) {
+														event.preventDefault();
+													}
+												}}
+											>
+												<input type="hidden" name="barId" value={bar.id} />
+												<button type="submit" class="danger tiny">
+													Delete
+												</button>
+											</form>
+										</div>
 									</td>
 								</tr>
 							{/each}
@@ -786,7 +893,7 @@
 						href={`/dashboard/bars?bar=${data.selectedBarId}`}
 						aria-current={data.selectedStorageFilter ? undefined : 'page'}
 					>
-						All storage types
+						All areas
 					</a>
 					{#each data.selectedBarStorageTypes as type}
 						<a
@@ -797,6 +904,11 @@
 							{type}
 						</a>
 					{/each}
+					<form method="POST" action="?/generateStock" class="generate-form">
+						<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
+						<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
+						<button type="submit" class="secondary tiny">Generate counts</button>
+					</form>
 				</div>
 
 				<div class="table-wrap">
@@ -804,12 +916,11 @@
 						<thead>
 							<tr>
 								<th scope="col">Bottle</th>
-								<th scope="col">Storage</th>
+								<th scope="col">Area</th>
 								<th scope="col">Current</th>
 								<th scope="col">Par</th>
 								<th scope="col">Reorder</th>
 								<th scope="col">Mode</th>
-								<th scope="col">Visible</th>
 								<th scope="col">Save</th>
 							</tr>
 						</thead>
@@ -829,28 +940,120 @@
 											<form method="POST" action="?/updateStock" class="inline-edit-form">
 												<input type="hidden" name="barBottleId" value={bottle.id} />
 												<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
+												<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
+														<input type="hidden" name="isVisible" value="true" />
 												<div class="inline-edit-grid">
-													<input name="location" value={bottle.location} aria-label="Storage area name" />
-													<select name="locationType" aria-label="Storage area type">
-														{#each LOCATION_TYPE_OPTIONS as option}
-															<option value={option.value} selected={bottle.locationType === option.value}
-																>{option.label}</option
-															>
-														{/each}
-													</select>
-													<input name="currentCount" type="number" min="0" step="0.25" value={bottle.currentCount} aria-label="Current count" />
-													<input name="parLevel" type="number" min="0" step="0.25" value={bottle.parLevel} aria-label="Par level" />
-													<input name="reorderLevel" type="number" min="0" step="0.25" value={bottle.reorderLevel} aria-label="Reorder level" />
-													<select name="inventoryMode" aria-label="Inventory mode">
-														<option value="disabled" selected={bottle.inventoryMode === 'disabled'}>Disabled</option>
-														<option value="simple-counts" selected={bottle.inventoryMode === 'simple-counts'}>Simple</option>
-														<option value="detailed-tracking" selected={bottle.inventoryMode === 'detailed-tracking'}>Detailed</option>
-													</select>
-													<select name="isVisible" aria-label="Visible">
-														<option value="true" selected={bottle.isVisible}>Visible</option>
-														<option value="false" selected={!bottle.isVisible}>Hidden</option>
-													</select>
-													<button type="submit">Save</button>
+															{#if isEditingRow(bottle.id)}
+																<input name="location" value={bottle.location} aria-label="Area name" />
+															{:else}
+																<div class="value-badge" aria-label="Area name">{bottle.location}</div>
+															{/if}
+
+															{#if isEditingRow(bottle.id)}
+																<select name="locationType" aria-label="Area type">
+																	{#each LOCATION_TYPE_OPTIONS as option}
+																		<option value={option.value} selected={bottle.locationType === option.value}
+																			>{option.label}</option
+																		>
+																	{/each}
+																</select>
+															{:else}
+																<div class="value-badge" aria-label="Area type">{locationTypeLabel(bottle.locationType)}</div>
+															{/if}
+
+															{#if isEditingRow(bottle.id)}
+																<input name="currentCount" type="number" min="0" step="0.25" value={bottle.currentCount} aria-label="Current count" />
+															{:else}
+																<div class="value-badge" aria-label="Current count">{bottle.currentCount}</div>
+															{/if}
+
+															{#if isEditingRow(bottle.id)}
+																<input name="parLevel" type="number" min="0" step="0.25" value={bottle.parLevel} aria-label="Par level" />
+															{:else}
+																<div class="value-badge" aria-label="Par level">{bottle.parLevel}</div>
+															{/if}
+
+															{#if isEditingRow(bottle.id)}
+																<input name="reorderLevel" type="number" min="0" step="0.25" value={bottle.reorderLevel} aria-label="Reorder level" />
+															{:else}
+																<div class="value-badge" aria-label="Reorder level">{bottle.reorderLevel}</div>
+															{/if}
+
+															{#if isEditingRow(bottle.id)}
+																<select name="inventoryMode" aria-label="Inventory mode">
+																	<option value="disabled" selected={bottle.inventoryMode === 'disabled'}>Disabled</option>
+																	<option value="simple-counts" selected={bottle.inventoryMode === 'simple-counts'}>Simple</option>
+																	<option value="detailed-tracking" selected={bottle.inventoryMode === 'detailed-tracking'}>Detailed</option>
+																</select>
+															{:else}
+																<div class="value-badge" aria-label="Inventory mode">{inventoryModeLabel(bottle.inventoryMode)}</div>
+															{/if}
+
+													<div class="row-action">
+																{#if isEditingRow(bottle.id)}
+																	<button type="submit" class="icon-button save-button" aria-label="Save row" title="Save">
+																		<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+																			<path
+																				fill="currentColor"
+																				d="M5 3h11l3 3v15H5V3zm2 2v4h8V5H7zm0 14h10v-6H7v6z"
+																			/>
+																		</svg>
+																	</button>
+																	<button type="button" class="tiny secondary" onclick={() => stopEditingRow(bottle.id)}>
+																		Cancel
+																	</button>
+																{:else}
+																	<button type="button" class="tiny secondary" onclick={() => startEditingRow(bottle.id)}>
+																		Edit
+																	</button>
+																{/if}
+														<button
+															type="button"
+															class="tiny icon-button add-button"
+															aria-label="Duplicate to new area"
+															title="Duplicate to new area"
+															onclick={() =>
+																openAddBottleModal({
+																	barBottleId: bottle.id,
+																	label: `${bottle.displayName} (${bottle.brand})`,
+																	location: bottle.location,
+																	locationType: bottle.locationType as StorageAreaType
+																})}
+														>
+															<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+																<path
+																	fill="currentColor"
+																	d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"
+																/>
+															</svg>
+														</button>
+														<button
+															type="submit"
+															formaction="?/addBottleToStorage"
+															formmethod="POST"
+															class="tiny icon-button storage-button"
+															aria-label="Add to storage"
+															title="Add to storage"
+														>
+															<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+																<path
+																	fill="currentColor"
+																	d="M3 7h18l-1.2 13.2A2 2 0 0 1 17.81 22H6.19a2 2 0 0 1-1.99-1.8L3 7zm4 3v8h2v-8H7zm4 0v8h2v-8h-2zm4 0v8h2v-8h-2zM8 3h8v2H8V3z"
+																/>
+															</svg>
+														</button>
+														{#if (form?.updatedBarBottleId ?? data.updatedBarBottleId) === bottle.id}
+															{#if (form?.rowStatus ?? data.rowStatus) === 'saved'}
+																<p class="row-feedback row-feedback-success" role="status">Saved</p>
+															{:else if (form?.rowStatus ?? data.rowStatus) === 'added'}
+																<p class="row-feedback row-feedback-success" role="status">Duplicated</p>
+															{:else if (form?.rowStatus ?? data.rowStatus) === 'stored'}
+																<p class="row-feedback row-feedback-success" role="status">Storage</p>
+															{:else if (form?.rowStatus ?? data.rowStatus) === 'error'}
+																<p class="row-feedback row-feedback-error" role="alert">Could not save</p>
+															{/if}
+														{/if}
+													</div>
 												</div>
 											</form>
 										</td>
@@ -861,6 +1064,52 @@
 					</table>
 				</div>
 			</section>
+		{/if}
+
+		{#if showAddBottleModal && data.selectedBarId && duplicateFromBarBottleId}
+			<div
+				class="modal-backdrop"
+				role="presentation"
+				onmousedown={(event) => {
+					if (event.target === event.currentTarget) {
+						closeAddBottleModal();
+					}
+				}}
+			>
+				<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="add-bottle-title" tabindex="-1">
+					<h3 id="add-bottle-title">Duplicate Bottle To New Area</h3>
+					<form method="POST" action="?/addBottleArea" class="modal-form">
+						<input type="hidden" name="barBottleId" value={duplicateFromBarBottleId} />
+						<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
+						<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
+
+						<label>
+							<span>Bottle</span>
+							<input value={duplicateFromBottleLabel} readonly />
+						</label>
+
+						<div class="modal-grid">
+							<label>
+								<span>Area name</span>
+								<input name="location" bind:value={addBottleLocation} required />
+							</label>
+							<label>
+								<span>Area type</span>
+								<select name="locationType" bind:value={addBottleLocationType}>
+									{#each LOCATION_TYPE_OPTIONS as option}
+										<option value={option.value}>{option.label}</option>
+									{/each}
+								</select>
+							</label>
+						</div>
+
+						<div class="modal-actions">
+							<button type="button" class="secondary" onclick={closeAddBottleModal}>Cancel</button>
+							<button type="submit" disabled={!addBottleLocation.trim()}>Duplicate</button>
+						</div>
+					</form>
+				</div>
+			</div>
 		{/if}
 
 		<a class="back-link" href="/dashboard">Back to dashboard</a>
@@ -1041,6 +1290,10 @@
 		background: color-mix(in srgb, var(--bb-ink) 72%, #5f4732 28%);
 	}
 
+	button.danger {
+		background: color-mix(in srgb, var(--bb-accent) 86%, #3d1208 14%);
+	}
+
 	button.tiny {
 		padding: 0.4rem 0.75rem;
 		font-size: 0.82rem;
@@ -1097,6 +1350,21 @@
 		margin-top: 0.8rem;
 	}
 
+	.generate-form {
+		margin-left: auto;
+	}
+
+	.manage-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		flex-wrap: wrap;
+	}
+
+	.manage-actions form {
+		margin: 0;
+	}
+
 	.filter-row .table-link[aria-current='page'] {
 		text-decoration: underline;
 	}
@@ -1107,9 +1375,125 @@
 
 	.inline-edit-grid {
 		display: grid;
-		grid-template-columns: repeat(8, minmax(0, 1fr));
+		grid-template-columns:
+			minmax(9rem, 1.35fr)
+			minmax(7rem, 1fr)
+			repeat(3, minmax(4.25rem, 0.55fr))
+			minmax(7rem, 0.95fr)
+			auto;
 		gap: 0.45rem;
 		align-items: center;
+	}
+
+	.inline-edit-grid input[type='number'] {
+		max-width: 5.25rem;
+		text-align: center;
+	}
+
+	.row-action {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+	}
+
+	.icon-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.2rem;
+		height: 2.2rem;
+		padding: 0;
+	}
+
+	.icon-button svg {
+		width: 1rem;
+		height: 1rem;
+	}
+
+	.save-button {
+		background: #15803d;
+	}
+
+	.add-button {
+		background: #1d4ed8;
+	}
+
+	.storage-button {
+		background: #475569;
+	}
+
+	.row-feedback {
+		margin: 0;
+		font-size: 0.76rem;
+		font-weight: 700;
+		line-height: 1;
+		white-space: nowrap;
+	}
+
+	.row-feedback-success {
+		color: #166534;
+	}
+
+	.row-feedback-error {
+		color: color-mix(in srgb, var(--bb-accent) 85%, #3d1208 15%);
+	}
+
+	.value-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 2.2rem;
+		padding: 0.2rem 0.55rem;
+		border-radius: 999px;
+		background: rgba(73, 41, 18, 0.08);
+		border: 1px solid rgba(73, 41, 18, 0.14);
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+		max-width: 100%;
+	}
+
+	.inline-edit-grid .value-badge:nth-child(1),
+	.inline-edit-grid .value-badge:nth-child(2) {
+		justify-content: flex-start;
+		padding-inline: 0.65rem;
+	}
+
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		background: rgba(10, 10, 10, 0.45);
+		padding: 1rem;
+		z-index: 50;
+	}
+
+	.modal-card {
+		width: min(42rem, 100%);
+		padding: 1rem;
+		border-radius: 1rem;
+		background: #fff;
+		box-shadow: 0 18px 40px rgba(15, 15, 20, 0.35);
+		display: grid;
+		gap: 0.8rem;
+	}
+
+	.modal-form {
+		display: grid;
+		gap: 0.75rem;
+	}
+
+	.modal-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.6rem;
+	}
+
+	.modal-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 0.6rem;
 	}
 
 	.bottle-table,
@@ -1169,6 +1553,10 @@
 		.step-grid {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
+
+		.inline-edit-grid {
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+		}
 	}
 
 	@media (max-width: 720px) {
@@ -1181,6 +1569,10 @@
 		}
 
 		.step-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.modal-grid {
 			grid-template-columns: 1fr;
 		}
 

@@ -11,6 +11,12 @@ type BottleRecord = {
 	category: string;
 };
 
+type ImageRecord = {
+	id: string;
+	name: string;
+	slug: string;
+};
+
 type BarRecord = {
 	id: string;
 	name: string;
@@ -30,11 +36,18 @@ type BarBottleRecord = {
 	displayName?: string;
 	location?: string;
 	locationType?: string;
+	location_type?: string;
 	currentCount?: number | string;
+	current_count?: number | string;
 	parLevel?: number | string;
+	par_level?: number | string;
 	reorderLevel?: number | string;
+	reorder_level?: number | string;
 	inventoryMode?: string;
+	inventory_mode?: string;
+	notes?: string | null;
 	isVisible?: boolean;
+	is_visible?: boolean;
 };
 
 type StorageAreaType = 'well' | 'backbar' | 'cold-storage' | 'overflow';
@@ -71,7 +84,54 @@ const stockNumbersSchema = z.object({
 const updateStockSchema = z.object({
 	barBottleId: z.string().trim().min(1, 'Bar bottle ID is required.'),
 	selectedBarId: z.string().trim().min(1, 'Bar ID is required.'),
+	selectedStorageFilter: z.string().trim().optional(),
 	location: z.string().trim().min(1, 'Storage area name is required.'),
+	locationType: z.enum(['well', 'backbar', 'cold-storage', 'overflow']),
+	inventoryMode: z.enum(INVENTORY_MODES),
+	isVisible: z.enum(['true', 'false'])
+});
+
+const deleteBarSchema = z.object({
+	barId: z.string().trim().min(1, 'Bar ID is required.')
+});
+
+const generateStockSchema = z.object({
+	selectedBarId: z.string().trim().min(1, 'Bar ID is required.'),
+	selectedStorageFilter: z.string().trim().optional()
+});
+
+const addBottleAreaSchema = z.object({
+	barBottleId: z.string().trim().min(1, 'Bar bottle ID is required.'),
+	selectedBarId: z.string().trim().min(1, 'Bar ID is required.'),
+	selectedStorageFilter: z.string().trim().optional(),
+	location: z.string().trim().min(1, 'Area name is required.'),
+	locationType: z.enum(['well', 'backbar', 'cold-storage', 'overflow'])
+});
+
+const addBottleToStorageSchema = z.object({
+	barBottleId: z.string().trim().min(1, 'Bar bottle ID is required.'),
+	selectedBarId: z.string().trim().min(1, 'Bar ID is required.'),
+	selectedStorageFilter: z.string().trim().optional()
+});
+
+const addBottleToBarSchema = z.object({
+	selectedBarId: z.string().trim().min(1, 'Bar ID is required.'),
+	selectedStorageFilter: z.string().trim().optional(),
+	bottleId: z.string().trim().min(1, 'Bottle ID is required.'),
+	location: z.string().trim().min(1, 'Area name is required.'),
+	locationType: z.enum(['well', 'backbar', 'cold-storage', 'overflow']),
+	inventoryMode: z.enum(INVENTORY_MODES),
+	isVisible: z.enum(['true', 'false'])
+});
+
+const createBottleAndAddToBarSchema = z.object({
+	selectedBarId: z.string().trim().min(1, 'Bar ID is required.'),
+	selectedStorageFilter: z.string().trim().optional(),
+	name: z.string().trim().min(1, 'Bottle name is required.'),
+	brand: z.string().trim().min(1, 'Brand is required.'),
+	category: z.string().trim().min(1, 'Category is required.'),
+	image: z.string().trim().min(1, 'Image is required.'),
+	location: z.string().trim().min(1, 'Area name is required.'),
 	locationType: z.enum(['well', 'backbar', 'cold-storage', 'overflow']),
 	inventoryMode: z.enum(INVENTORY_MODES),
 	isVisible: z.enum(['true', 'false'])
@@ -109,6 +169,7 @@ function parseStorageAreas(storageAreasJson: string): StorageAreaInput[] {
 const BOTTLE_COLLECTION = env.POCKETBASE_BOTTLE_COLLECTION ?? 'bottles';
 const BAR_COLLECTION = env.POCKETBASE_BAR_COLLECTION ?? 'bars';
 const BAR_BOTTLE_COLLECTION = env.POCKETBASE_BAR_BOTTLE_COLLECTION ?? 'bar_bottles';
+const IMAGE_COLLECTION = env.POCKETBASE_IMAGE_COLLECTION ?? 'bottle_images';
 
 function slugify(value: string) {
 	return value
@@ -193,18 +254,47 @@ async function ensureCollection(pb: PocketBase, name: string, fields: Array<Reco
 	}
 }
 
+async function ensureCollectionFields(
+	pb: PocketBase,
+	collectionName: string,
+	requiredFields: Array<Record<string, unknown>>
+) {
+	const collection = await pb.collections.getOne(collectionName);
+	const existingNames = new Set((collection.fields ?? []).map((field) => field.name));
+	const missingFields = requiredFields.filter((field) => {
+		const fieldName = String(field.name ?? '');
+		return fieldName.length > 0 && !existingNames.has(fieldName);
+	});
+
+	if (missingFields.length === 0) {
+		return collection;
+	}
+
+	const nextFields = [...(collection.fields ?? []), ...missingFields];
+
+	await pb.collections.update(collection.id, {
+		name: collection.name,
+		type: collection.type,
+		fields: nextFields
+	});
+
+	return pb.collections.getOne(collectionName);
+}
+
 async function ensureBarCollections(pb: PocketBase) {
 	const bottleCollection = await pb.collections.getOne(BOTTLE_COLLECTION);
-
-	const barCollection = await ensureCollection(pb, BAR_COLLECTION, [
+	const barCollectionFields = [
 		textField('name', true),
 		textField('slug', true),
 		textField('barType', true),
 		textField('defaultInventoryMode', true),
 		textField('stockingProfile', false)
-	]);
+	];
 
-	await ensureCollection(pb, BAR_BOTTLE_COLLECTION, [
+	const barCollection = await ensureCollection(pb, BAR_COLLECTION, barCollectionFields);
+	await ensureCollectionFields(pb, BAR_COLLECTION, barCollectionFields);
+
+	const barBottleFields = [
 		relationField('bar', barCollection.id, true),
 		relationField('bottle', bottleCollection.id, true),
 		textField('displayName', true),
@@ -216,7 +306,10 @@ async function ensureBarCollections(pb: PocketBase) {
 		textField('locationType', false),
 		textField('notes', false, 2000),
 		boolField('isVisible', true)
-	]);
+	];
+
+	await ensureCollection(pb, BAR_BOTTLE_COLLECTION, barBottleFields);
+	await ensureCollectionFields(pb, BAR_BOTTLE_COLLECTION, barBottleFields);
 }
 
 async function fetchBarsSafe(pb: PocketBase): Promise<{
@@ -251,12 +344,42 @@ function toNumber(value: string | number | undefined): number {
 	return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function toBoolean(value: boolean | string | undefined): boolean {
+	if (typeof value === 'boolean') {
+		return value;
+	}
+
+	if (typeof value === 'string') {
+		return value.toLowerCase() === 'true';
+	}
+
+	return true;
+}
+
+function readBarBottleCounts(item: BarBottleRecord) {
+	return {
+		currentCount: toNumber(item.currentCount ?? item.current_count),
+		parLevel: toNumber(item.parLevel ?? item.par_level),
+		reorderLevel: toNumber(item.reorderLevel ?? item.reorder_level)
+	};
+}
+
+function readBarBottleMeta(item: BarBottleRecord) {
+	return {
+		location: item.location ?? '',
+		locationType: item.locationType ?? item.location_type ?? 'backbar',
+		inventoryMode: item.inventoryMode ?? item.inventory_mode ?? 'simple-counts',
+		isVisible: toBoolean(item.isVisible ?? item.is_visible)
+	};
+}
+
 export const load = (async ({ url }) => {
 	const pb = await createAdminClient();
 
 	if (!pb) {
 		return {
 			bottles: [] satisfies BottleRecord[],
+			images: [] satisfies ImageRecord[],
 			bars: [] satisfies Array<BarRecord & { stockedCount: number }>,
 			setupError: 'PocketBase admin credentials are required to create and stock bars.'
 		};
@@ -264,9 +387,13 @@ export const load = (async ({ url }) => {
 
 	await ensureBarCollections(pb);
 
-	const [bottles, stockedBottles, barsResult] = await Promise.all([
+	const [bottles, images, stockedBottles, barsResult] = await Promise.all([
 		pb.collection(BOTTLE_COLLECTION).getFullList<BottleRecord>({
 			fields: 'id,name,brand,category',
+			sort: 'name'
+		}),
+		pb.collection(IMAGE_COLLECTION).getFullList<ImageRecord>({
+			fields: 'id,name,slug',
 			sort: 'name'
 		}),
 		pb.collection(BAR_BOTTLE_COLLECTION).getFullList<BarBottleRecord>(),
@@ -276,6 +403,13 @@ export const load = (async ({ url }) => {
 	const bars = barsResult.bars;
 	const selectedBarId = url.searchParams.get('bar')?.trim() ?? '';
 	const selectedStorageFilter = url.searchParams.get('storage')?.trim() ?? '';
+	const stockUpdated = url.searchParams.get('updated') === '1';
+	const generatedCount = Number(url.searchParams.get('generated') ?? '0');
+	const updatedBarBottleId = url.searchParams.get('updatedBarBottleId')?.trim() ?? '';
+	const rowStatus = url.searchParams.get('rowStatus')?.trim() ?? '';
+	const addedCount = Number(url.searchParams.get('added') ?? '0');
+	const storageAddedCount = Number(url.searchParams.get('storageAdded') ?? '0');
+	const bottleAddedCount = Number(url.searchParams.get('bottleAdded') ?? '0');
 
 	const stockedCountByBar = new Map<string, number>();
 	for (const item of stockedBottles) {
@@ -294,6 +428,8 @@ export const load = (async ({ url }) => {
 		.map((item) => {
 			const bottleRef = item.bottle ?? item.bottleId ?? '';
 			const bottle = bottles.find((candidate) => candidate.id === bottleRef);
+			const counts = readBarBottleCounts(item);
+			const meta = readBarBottleMeta(item);
 			return {
 				id: item.id,
 				barId: item.bar ?? item.barId ?? '',
@@ -301,13 +437,13 @@ export const load = (async ({ url }) => {
 				displayName: item.displayName ?? bottle?.name ?? 'Unknown bottle',
 				brand: bottle?.brand ?? 'Unknown brand',
 				category: bottle?.category ?? 'Unknown category',
-				location: item.location ?? '',
-				locationType: item.locationType ?? 'backbar',
-				currentCount: toNumber(item.currentCount),
-				parLevel: toNumber(item.parLevel),
-				reorderLevel: toNumber(item.reorderLevel),
-				inventoryMode: item.inventoryMode ?? 'simple-counts',
-				isVisible: item.isVisible ?? true
+				location: meta.location,
+				locationType: meta.locationType,
+				currentCount: counts.currentCount,
+				parLevel: counts.parLevel,
+				reorderLevel: counts.reorderLevel,
+				inventoryMode: meta.inventoryMode,
+				isVisible: meta.isVisible
 			};
 		});
 
@@ -318,9 +454,19 @@ export const load = (async ({ url }) => {
 	const selectedBarStorageTypes = [...new Set(selectedBarBottles.map((item) => item.locationType))].filter(
 		(value): value is StorageAreaType => STORAGE_AREA_TYPES.has(value as StorageAreaType)
 	);
+	const selectedBarBottleAreaKeys = [
+		...new Set(
+			selectedBarBottles.map((item) => {
+				const normalizedLocation = item.location.trim().toLowerCase();
+				const normalizedType = item.locationType.trim().toLowerCase();
+				return `${item.bottleId}::${normalizedLocation}::${normalizedType}`;
+			})
+		)
+	];
 
 	return {
 		bottles,
+		images,
 		bars: bars.map((bar) => ({
 			id: bar.id ?? '',
 			name: bar.name ?? 'Untitled bar',
@@ -335,6 +481,14 @@ export const load = (async ({ url }) => {
 		selectedStorageFilter,
 		selectedBarBottles: visibleBarBottles,
 		selectedBarStorageTypes,
+		selectedBarBottleAreaKeys,
+		stockUpdated,
+		generatedCount: Number.isFinite(generatedCount) ? generatedCount : 0,
+		addedCount: Number.isFinite(addedCount) ? addedCount : 0,
+		storageAddedCount: Number.isFinite(storageAddedCount) ? storageAddedCount : 0,
+		bottleAddedCount: Number.isFinite(bottleAddedCount) ? bottleAddedCount : 0,
+		updatedBarBottleId,
+		rowStatus,
 		setupError: barsResult.barLoadWarning
 	};
 }) satisfies PageServerLoad;
@@ -508,6 +662,7 @@ export const actions: Actions = {
 		const formData = await request.formData();
 		const barBottleId = String(formData.get('barBottleId') ?? '').trim();
 		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
+		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
 		const location = String(formData.get('location') ?? '').trim();
 		const locationType = String(formData.get('locationType') ?? '').trim();
 		const inventoryMode = String(formData.get('inventoryMode') ?? '').trim();
@@ -519,6 +674,7 @@ export const actions: Actions = {
 		const validation = updateStockSchema.safeParse({
 			barBottleId,
 			selectedBarId,
+			selectedStorageFilter,
 			location,
 			locationType,
 			inventoryMode,
@@ -537,18 +693,427 @@ export const actions: Actions = {
 			});
 		}
 
-		const payload = {
+		const barBottleCollection = await pb.collections.getOne(BAR_BOTTLE_COLLECTION);
+		const fieldNames = new Set((barBottleCollection.fields ?? []).map((field) => field.name));
+		const payload: Record<string, unknown> = {};
+
+		const setPreferredField = (primary: string, legacy: string, value: unknown) => {
+			if (fieldNames.has(primary)) {
+				payload[primary] = value;
+				return;
+			}
+			if (fieldNames.has(legacy)) {
+				payload[legacy] = value;
+			}
+		};
+
+		if (fieldNames.has('location')) {
+			payload.location = location;
+		}
+		setPreferredField('locationType', 'location_type', locationType);
+		setPreferredField('inventoryMode', 'inventory_mode', inventoryMode);
+		setPreferredField('isVisible', 'is_visible', isVisible === 'true');
+		setPreferredField('currentCount', 'current_count', stockValidation.data.current);
+		setPreferredField('parLevel', 'par_level', stockValidation.data.par);
+		setPreferredField('reorderLevel', 'reorder_level', stockValidation.data.reorder);
+
+		if (Object.keys(payload).length === 0) {
+			return fail(500, {
+				error: 'Bar bottle schema does not expose editable fields. Refresh schema setup and try again.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		await pb.collection(BAR_BOTTLE_COLLECTION).update(barBottleId, payload);
+
+		const updatedRecord = await pb.collection(BAR_BOTTLE_COLLECTION).getOne<BarBottleRecord>(barBottleId);
+		const updatedCounts = readBarBottleCounts(updatedRecord);
+		const updatedMeta = readBarBottleMeta(updatedRecord);
+		const expectedCurrent = stockValidation.data.current;
+		const expectedPar = stockValidation.data.par;
+		const expectedReorder = stockValidation.data.reorder;
+		const expectedVisible = isVisible === 'true';
+
+		if (fieldNames.has('location') && updatedMeta.location !== location) {
+			return fail(500, {
+				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const hasLocationType = fieldNames.has('locationType') || fieldNames.has('location_type');
+		if (hasLocationType && updatedMeta.locationType !== locationType) {
+			return fail(500, {
+				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const hasInventoryMode = fieldNames.has('inventoryMode') || fieldNames.has('inventory_mode');
+		if (hasInventoryMode && updatedMeta.inventoryMode !== inventoryMode) {
+			return fail(500, {
+				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const hasVisible = fieldNames.has('isVisible') || fieldNames.has('is_visible');
+		if (hasVisible && updatedMeta.isVisible !== expectedVisible) {
+			return fail(500, {
+				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const hasCurrent = fieldNames.has('currentCount') || fieldNames.has('current_count');
+		if (hasCurrent && updatedCounts.currentCount !== expectedCurrent) {
+			return fail(500, {
+				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const hasPar = fieldNames.has('parLevel') || fieldNames.has('par_level');
+		if (hasPar && updatedCounts.parLevel !== expectedPar) {
+			return fail(500, {
+				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const hasReorder = fieldNames.has('reorderLevel') || fieldNames.has('reorder_level');
+		if (hasReorder && updatedCounts.reorderLevel !== expectedReorder) {
+			return fail(500, {
+				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		if (
+			(hasCurrent || hasPar || hasReorder) &&
+			(updatedCounts.currentCount === expectedCurrent ||
+				updatedCounts.parLevel === expectedPar ||
+				updatedCounts.reorderLevel === expectedReorder)
+		) {
+			// At least one numeric stock field persisted as expected.
+		}
+
+		const redirectParams = new URLSearchParams({
+			bar: selectedBarId,
+			updated: '1',
+			updatedBarBottleId: barBottleId,
+			rowStatus: 'saved'
+		});
+		if (selectedStorageFilter) {
+			redirectParams.set('storage', selectedStorageFilter);
+		}
+
+		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
+	},
+	addBottleArea: async ({ request }) => {
+		const pb = await createAdminClient();
+
+		if (!pb) {
+			return fail(500, {
+				error: 'PocketBase admin credentials are required to add bottle areas.'
+			});
+		}
+
+		await ensureBarCollections(pb);
+
+		const formData = await request.formData();
+		const barBottleId = String(formData.get('barBottleId') ?? '').trim();
+		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
+		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const location = String(formData.get('location') ?? '').trim();
+		const locationType = String(formData.get('locationType') ?? '').trim();
+
+		const validation = addBottleAreaSchema.safeParse({
+			barBottleId,
+			selectedBarId,
+			selectedStorageFilter,
+			location,
+			locationType
+		});
+
+		if (!validation.success) {
+			return fail(400, {
+				error: 'Unable to add another area row. Refresh and try again.'
+			});
+		}
+
+		const source = await pb.collection(BAR_BOTTLE_COLLECTION).getOne<BarBottleRecord>(barBottleId);
+		const sourceBarId = source.bar ?? source.barId ?? '';
+		const sourceBottleId = source.bottle ?? source.bottleId ?? '';
+
+		if (!sourceBarId || !sourceBottleId) {
+			return fail(400, {
+				error: 'Unable to duplicate this bottle row because source references are missing.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const meta = readBarBottleMeta(source);
+		const counts = readBarBottleCounts(source);
+		const targetLocation = location;
+		const targetLocationType = locationType;
+		const existingAreaRows = await pb.collection(BAR_BOTTLE_COLLECTION).getFullList<BarBottleRecord>({
+			filter: `bar = \"${sourceBarId}\" && bottle = \"${sourceBottleId}\"`
+		});
+		const duplicateExists = existingAreaRows.some((item) => {
+			if (item.id === source.id) {
+				return false;
+			}
+			const itemMeta = readBarBottleMeta(item);
+			return itemMeta.location === targetLocation && itemMeta.locationType === targetLocationType;
+		});
+
+		if (duplicateExists) {
+			return fail(409, {
+				error: 'This bottle already exists in that area. Change area and save the existing row instead.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const createPayload = {
+			bar: sourceBarId,
+			bottle: sourceBottleId,
+			displayName: source.displayName ?? '',
+			inventoryMode: meta.inventoryMode,
+			currentCount: counts.currentCount,
+			parLevel: counts.parLevel,
+			reorderLevel: counts.reorderLevel,
+			location: targetLocation,
+			locationType: targetLocationType,
+			notes: source.notes ?? null,
+			isVisible: meta.isVisible
+		};
+
+		let created: { id: string };
+		try {
+			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(createPayload);
+		} catch (error) {
+			const status =
+				typeof error === 'object' && error !== null && 'status' in error
+					? Number(error.status)
+					: 0;
+			if (status !== 400) {
+				throw error;
+			}
+
+			const fallbackPayload = { ...createPayload };
+			delete (fallbackPayload as { locationType?: string }).locationType;
+			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
+		}
+
+		const redirectParams = new URLSearchParams({
+			bar: selectedBarId,
+			added: '1',
+			updatedBarBottleId: created.id,
+			rowStatus: 'added'
+		});
+
+		if (selectedStorageFilter) {
+			redirectParams.set('storage', selectedStorageFilter);
+		}
+
+		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
+	},
+	addBottleToStorage: async ({ request }) => {
+		const pb = await createAdminClient();
+
+		if (!pb) {
+			return fail(500, {
+				error: 'PocketBase admin credentials are required to add bottles to storage.'
+			});
+		}
+
+		await ensureBarCollections(pb);
+
+		const formData = await request.formData();
+		const barBottleId = String(formData.get('barBottleId') ?? '').trim();
+		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
+		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+
+		const validation = addBottleToStorageSchema.safeParse({
+			barBottleId,
+			selectedBarId,
+			selectedStorageFilter
+		});
+
+		if (!validation.success) {
+			return fail(400, {
+				error: 'Unable to add this bottle to storage. Refresh and try again.'
+			});
+		}
+
+		const source = await pb.collection(BAR_BOTTLE_COLLECTION).getOne<BarBottleRecord>(barBottleId);
+		const sourceBarId = source.bar ?? source.barId ?? '';
+		const sourceBottleId = source.bottle ?? source.bottleId ?? '';
+
+		if (!sourceBarId || !sourceBottleId) {
+			return fail(400, {
+				error: 'Unable to duplicate this bottle row because source references are missing.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const targetLocation = 'Storage';
+		const targetLocationType = 'overflow';
+		const existingStorageRows = await pb.collection(BAR_BOTTLE_COLLECTION).getFullList<BarBottleRecord>({
+			filter: `bar = \"${sourceBarId}\" && bottle = \"${sourceBottleId}\"`
+		});
+		const storageAlreadyExists = existingStorageRows.some((item) => {
+			const itemMeta = readBarBottleMeta(item);
+			return itemMeta.location === targetLocation && itemMeta.locationType === targetLocationType;
+		});
+
+		if (storageAlreadyExists) {
+			return fail(409, {
+				error: 'This bottle is already in Storage / Overflow.',
+				updatedBarBottleId: barBottleId,
+				rowStatus: 'error'
+			});
+		}
+
+		const meta = readBarBottleMeta(source);
+		const counts = readBarBottleCounts(source);
+		const createPayload = {
+			bar: sourceBarId,
+			bottle: sourceBottleId,
+			displayName: source.displayName ?? '',
+			inventoryMode: meta.inventoryMode,
+			currentCount: counts.currentCount,
+			parLevel: counts.parLevel,
+			reorderLevel: counts.reorderLevel,
+			location: targetLocation,
+			locationType: targetLocationType,
+			notes: source.notes ?? null,
+			isVisible: meta.isVisible
+		};
+
+		let created: { id: string };
+		try {
+			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(createPayload);
+		} catch (error) {
+			const status =
+				typeof error === 'object' && error !== null && 'status' in error
+					? Number(error.status)
+					: 0;
+			if (status !== 400) {
+				throw error;
+			}
+
+			const fallbackPayload = { ...createPayload };
+			delete (fallbackPayload as { locationType?: string }).locationType;
+			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
+		}
+
+		const redirectParams = new URLSearchParams({
+			bar: selectedBarId,
+			storageAdded: '1',
+			updatedBarBottleId: created.id,
+			rowStatus: 'stored'
+		});
+
+		if (selectedStorageFilter) {
+			redirectParams.set('storage', selectedStorageFilter);
+		}
+
+		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
+	},
+	addBottleToBar: async ({ request }) => {
+		const pb = await createAdminClient();
+
+		if (!pb) {
+			return fail(500, {
+				error: 'PocketBase admin credentials are required to add bottles.'
+			});
+		}
+
+		await ensureBarCollections(pb);
+
+		const formData = await request.formData();
+		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
+		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const bottleId = String(formData.get('bottleId') ?? '').trim();
+		const location = String(formData.get('location') ?? '').trim();
+		const locationType = String(formData.get('locationType') ?? '').trim();
+		const inventoryMode = String(formData.get('inventoryMode') ?? '').trim();
+		const isVisible = String(formData.get('isVisible') ?? '').trim();
+		const currentInput = String(formData.get('currentCount') ?? '').trim();
+		const parInput = String(formData.get('parLevel') ?? '').trim();
+		const reorderInput = String(formData.get('reorderLevel') ?? '').trim();
+
+		const validation = addBottleToBarSchema.safeParse({
+			selectedBarId,
+			selectedStorageFilter,
+			bottleId,
 			location,
 			locationType,
 			inventoryMode,
-			isVisible: isVisible === 'true',
+			isVisible
+		});
+
+		const stockValidation = stockNumbersSchema.safeParse({
+			current: currentInput,
+			par: parInput,
+			reorder: reorderInput
+		});
+
+		if (!validation.success || !stockValidation.success) {
+			return fail(400, {
+				error: 'Unable to add bottle. Check values and try again.'
+			});
+		}
+
+		const bottle = await pb.collection(BOTTLE_COLLECTION).getOne<BottleRecord>(bottleId, {
+			fields: 'id,name'
+		});
+
+		const existingRows = await pb.collection(BAR_BOTTLE_COLLECTION).getFullList<BarBottleRecord>({
+			filter: `bar = \"${selectedBarId}\" && bottle = \"${bottleId}\"`
+		});
+
+		const duplicateExists = existingRows.some((item) => {
+			const meta = readBarBottleMeta(item);
+			return meta.location === location && meta.locationType === locationType;
+		});
+
+		if (duplicateExists) {
+			return fail(409, {
+				error: 'This bottle already exists in that area/type.'
+			});
+		}
+
+		const payload = {
+			bar: selectedBarId,
+			bottle: bottle.id,
+			displayName: bottle.name,
+			inventoryMode,
 			currentCount: stockValidation.data.current,
 			parLevel: stockValidation.data.par,
-			reorderLevel: stockValidation.data.reorder
+			reorderLevel: stockValidation.data.reorder,
+			location,
+			locationType,
+			notes: null,
+			isVisible: isVisible === 'true'
 		};
 
+		let created: { id: string };
 		try {
-			await pb.collection(BAR_BOTTLE_COLLECTION).update(barBottleId, payload);
+			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(payload);
 		} catch (error) {
 			const status =
 				typeof error === 'object' && error !== null && 'status' in error
@@ -560,9 +1125,226 @@ export const actions: Actions = {
 
 			const fallbackPayload = { ...payload };
 			delete (fallbackPayload as { locationType?: string }).locationType;
-			await pb.collection(BAR_BOTTLE_COLLECTION).update(barBottleId, fallbackPayload);
+			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
 		}
 
-		throw redirect(303, `/dashboard/bars?bar=${selectedBarId}`);
+		const redirectParams = new URLSearchParams({
+			bar: selectedBarId,
+			bottleAdded: '1',
+			updatedBarBottleId: created.id,
+			rowStatus: 'added'
+		});
+
+		if (selectedStorageFilter) {
+			redirectParams.set('storage', selectedStorageFilter);
+		}
+
+		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
+	},
+	createBottleAndAddToBar: async ({ request }) => {
+		const pb = await createAdminClient();
+
+		if (!pb) {
+			return fail(500, {
+				error: 'PocketBase admin credentials are required to create bottles.'
+			});
+		}
+
+		await ensureBarCollections(pb);
+
+		const formData = await request.formData();
+		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
+		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const name = String(formData.get('name') ?? '').trim();
+		const brand = String(formData.get('brand') ?? '').trim();
+		const category = String(formData.get('category') ?? '').trim();
+		const image = String(formData.get('image') ?? '').trim();
+		const location = String(formData.get('location') ?? '').trim();
+		const locationType = String(formData.get('locationType') ?? '').trim();
+		const inventoryMode = String(formData.get('inventoryMode') ?? '').trim();
+		const isVisible = String(formData.get('isVisible') ?? '').trim();
+		const currentInput = String(formData.get('currentCount') ?? '').trim();
+		const parInput = String(formData.get('parLevel') ?? '').trim();
+		const reorderInput = String(formData.get('reorderLevel') ?? '').trim();
+
+		const validation = createBottleAndAddToBarSchema.safeParse({
+			selectedBarId,
+			selectedStorageFilter,
+			name,
+			brand,
+			category,
+			image,
+			location,
+			locationType,
+			inventoryMode,
+			isVisible
+		});
+
+		const stockValidation = stockNumbersSchema.safeParse({
+			current: currentInput,
+			par: parInput,
+			reorder: reorderInput
+		});
+
+		if (!validation.success || !stockValidation.success) {
+			return fail(400, {
+				error: 'Unable to create bottle. Check values and try again.'
+			});
+		}
+
+		const slugBase = slugify(name) || 'bottle';
+		const createdBottle = await pb.collection(BOTTLE_COLLECTION).create({
+			name,
+			slug: `${slugBase}-${Date.now().toString().slice(-6)}`,
+			brand,
+			category,
+			section: null,
+			subcategory: null,
+			origin: null,
+			abv: null,
+			description: '',
+			image
+		});
+
+		const payload = {
+			bar: selectedBarId,
+			bottle: createdBottle.id,
+			displayName: name,
+			inventoryMode,
+			currentCount: stockValidation.data.current,
+			parLevel: stockValidation.data.par,
+			reorderLevel: stockValidation.data.reorder,
+			location,
+			locationType,
+			notes: null,
+			isVisible: isVisible === 'true'
+		};
+
+		let createdBarBottle: { id: string };
+		try {
+			createdBarBottle = await pb.collection(BAR_BOTTLE_COLLECTION).create(payload);
+		} catch (error) {
+			const status =
+				typeof error === 'object' && error !== null && 'status' in error
+					? Number(error.status)
+					: 0;
+			if (status !== 400) {
+				throw error;
+			}
+
+			const fallbackPayload = { ...payload };
+			delete (fallbackPayload as { locationType?: string }).locationType;
+			createdBarBottle = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
+		}
+
+		const redirectParams = new URLSearchParams({
+			bar: selectedBarId,
+			bottleAdded: '1',
+			updatedBarBottleId: createdBarBottle.id,
+			rowStatus: 'added'
+		});
+
+		if (selectedStorageFilter) {
+			redirectParams.set('storage', selectedStorageFilter);
+		}
+
+		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
+	},
+	generateStock: async ({ request }) => {
+		const pb = await createAdminClient();
+
+		if (!pb) {
+			return fail(500, {
+				error: 'PocketBase admin credentials are required to generate stock.'
+			});
+		}
+
+		await ensureBarCollections(pb);
+
+		const formData = await request.formData();
+		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
+		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+
+		const validation = generateStockSchema.safeParse({
+			selectedBarId,
+			selectedStorageFilter
+		});
+
+		if (!validation.success) {
+			return fail(400, {
+				error: 'Unable to generate stock values. Refresh and try again.'
+			});
+		}
+
+		const barBottleCollection = await pb.collections.getOne(BAR_BOTTLE_COLLECTION);
+		const fieldNames = new Set((barBottleCollection.fields ?? []).map((field) => field.name));
+
+		const barBottles = await pb.collection(BAR_BOTTLE_COLLECTION).getFullList<BarBottleRecord>({
+			filter: `bar = \"${selectedBarId}\"`
+		});
+
+		const targetBottles = selectedStorageFilter
+			? barBottles.filter((item) => readBarBottleMeta(item).locationType === selectedStorageFilter)
+			: barBottles;
+
+		for (const item of targetBottles) {
+			const parLevel = toNumber(item.parLevel ?? item.par_level);
+			const generatedCurrent = parLevel > 0 ? parLevel : 1;
+			const generatedReorder = parLevel > 0 ? Number((parLevel * 0.5).toFixed(2)) : 0.5;
+
+			const payload: Record<string, unknown> = {};
+			if (fieldNames.has('currentCount')) {
+				payload.currentCount = generatedCurrent;
+			} else if (fieldNames.has('current_count')) {
+				payload.current_count = generatedCurrent;
+			}
+
+			if (fieldNames.has('reorderLevel')) {
+				payload.reorderLevel = generatedReorder;
+			} else if (fieldNames.has('reorder_level')) {
+				payload.reorder_level = generatedReorder;
+			}
+
+			if (Object.keys(payload).length === 0) {
+				continue;
+			}
+
+			await pb.collection(BAR_BOTTLE_COLLECTION).update(item.id, payload);
+		}
+
+		const redirectParams = new URLSearchParams({
+			bar: selectedBarId,
+			generated: String(targetBottles.length)
+		});
+		if (selectedStorageFilter) {
+			redirectParams.set('storage', selectedStorageFilter);
+		}
+
+		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
+	},
+	deleteBar: async ({ request }) => {
+		const pb = await createAdminClient();
+
+		if (!pb) {
+			return fail(500, {
+				error: 'PocketBase admin credentials are required to delete bars.'
+			});
+		}
+
+		await ensureBarCollections(pb);
+
+		const formData = await request.formData();
+		const barId = String(formData.get('barId') ?? '').trim();
+
+		const validation = deleteBarSchema.safeParse({ barId });
+		if (!validation.success) {
+			return fail(400, {
+				error: 'Unable to delete bar. Refresh and try again.'
+			});
+		}
+
+		await pb.collection(BAR_COLLECTION).delete(barId);
+
+		throw redirect(303, '/dashboard/bars');
 	}
 };
