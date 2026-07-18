@@ -17,6 +17,8 @@
 			}>;
 			selectedBarId: string;
 			selectedStorageFilter: string;
+			selectedSortKey: SortKey;
+			selectedSortDirection: 'asc' | 'desc';
 			selectedBarStorageTypes: string[];
 			stockUpdated: boolean;
 			generatedCount: number;
@@ -38,7 +40,6 @@
 				parLevel: number;
 				reorderLevel: number;
 				inventoryMode: string;
-				isVisible: boolean;
 			}>;
 			setupError: string | null;
 		};
@@ -53,6 +54,7 @@
 	type StorageAreaType = 'well' | 'backbar' | 'cold-storage' | 'overflow';
 	type StorageArea = { id: string; name: string; type: StorageAreaType };
 	type StockValues = { current: string; par: string; reorder: string; storageAreaId: string };
+	type SortKey = 'bottle' | 'area' | 'current' | 'par' | 'reorder' | 'mode' | 'save';
 
 	const AREA_TYPE_OPTIONS: Array<{ value: StorageAreaType; label: string }> = [
 		{ value: 'well', label: 'Well' },
@@ -137,6 +139,9 @@
 	let selectedBottleIds = $state<string[]>([]);
 	let stockByBottle = $state<Record<string, StockValues>>({});
 	let editingRows = $state<Record<string, boolean>>({});
+	let sortKey = $state<SortKey>('bottle');
+	let sortDirection = $state<'asc' | 'desc'>('asc');
+	let sortInitialized = $state(false);
 	let wizardForm = $state<HTMLFormElement | null>(null);
 	let showAddBottleModal = $state(false);
 	let duplicateFromBarBottleId = $state('');
@@ -280,13 +285,52 @@
 
 	function openAddBottleModal(source: {
 		barBottleId: string;
+		bottleId: string;
 		label: string;
 		location: string;
 		locationType: StorageAreaType;
 	}): void {
+		const normalizedType = source.locationType.toLowerCase();
+		type SelectedBarBottle = (typeof data.selectedBarBottles)[number];
+		const siblingLocations = data.selectedBarBottles
+			.filter(
+				(item: SelectedBarBottle) =>
+					item.bottleId === source.bottleId && item.locationType.toLowerCase() === normalizedType
+			)
+			.map((item: SelectedBarBottle) => item.location.trim())
+			.filter((value: string) => value.length > 0);
+
+		const parseBaseAndIndex = (value: string): { base: string; index: number } => {
+			const trimmed = value.trim();
+			const match = trimmed.match(/^(.*?)(?:\s+(\d+))?$/);
+			if (!match) {
+				return { base: trimmed || 'Area', index: 1 };
+			}
+
+			const candidateBase = (match[1] ?? '').trim() || trimmed || 'Area';
+			const parsedIndex = Number(match[2] ?? '1');
+			return {
+				base: candidateBase,
+				index: Number.isFinite(parsedIndex) && parsedIndex > 0 ? parsedIndex : 1
+			};
+		};
+
+		const sourceParts = parseBaseAndIndex(source.location || '');
+		const baseLocation = sourceParts.base || 'Area';
+		let highestIndex = 1;
+
+		for (const locationName of siblingLocations) {
+			const candidate = parseBaseAndIndex(locationName);
+			if (candidate.base.toLowerCase() === baseLocation.toLowerCase()) {
+				highestIndex = Math.max(highestIndex, candidate.index);
+			}
+		}
+
+		const suggestedLocation = `${baseLocation} ${highestIndex + 1}`;
+
 		duplicateFromBarBottleId = source.barBottleId;
 		duplicateFromBottleLabel = source.label;
-		addBottleLocation = source.location;
+		addBottleLocation = suggestedLocation;
 		addBottleLocationType = source.locationType;
 		showAddBottleModal = true;
 	}
@@ -294,6 +338,8 @@
 	function closeAddBottleModal(): void {
 		duplicateFromBarBottleId = '';
 		duplicateFromBottleLabel = '';
+		addBottleLocation = 'Bar';
+		addBottleLocationType = 'well';
 		showAddBottleModal = false;
 	}
 
@@ -317,13 +363,77 @@
 	}
 
 	function inventoryModeLabel(value: string): string {
-		if (value === 'disabled') {
-			return 'Disabled';
-		}
 		if (value === 'detailed-tracking') {
 			return 'Detailed';
 		}
-		return 'Simple';
+		return 'Full';
+	}
+
+	function barsUrl(params: { bar?: string; storage?: string } = {}): string {
+		const query = new URLSearchParams();
+		if (params.bar) {
+			query.set('bar', params.bar);
+		}
+		if (params.storage) {
+			query.set('storage', params.storage);
+		}
+		query.set('sort', sortKey);
+		query.set('dir', sortDirection);
+		return `/dashboard/bars?${query.toString()}`;
+	}
+
+	function updateSortInUrl(): void {
+		if (typeof window === 'undefined') {
+			return;
+		}
+
+		const nextUrl = new URL(window.location.href);
+		nextUrl.searchParams.set('sort', sortKey);
+		nextUrl.searchParams.set('dir', sortDirection);
+		window.history.replaceState(window.history.state, '', `${nextUrl.pathname}?${nextUrl.searchParams.toString()}`);
+	}
+
+	function toggleSort(nextKey: SortKey): void {
+		if (sortKey === nextKey) {
+			sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+			updateSortInUrl();
+			return;
+		}
+
+		sortKey = nextKey;
+		sortDirection = 'asc';
+		updateSortInUrl();
+	}
+
+	function activeSortDirection(key: SortKey): 'asc' | 'desc' | null {
+		return sortKey === key ? sortDirection : null;
+	}
+
+	function rowStatusLabel(rowId: string): string {
+		const updatedRowId = (form?.updatedBarBottleId ?? data.updatedBarBottleId ?? '').trim();
+		if (updatedRowId !== rowId) {
+			return '';
+		}
+
+		const status = (form?.rowStatus ?? data.rowStatus ?? '').trim();
+		if (status === 'saved') {
+			return 'Saved';
+		}
+		if (status === 'added') {
+			return 'Duplicated';
+		}
+		if (status === 'stored') {
+			return 'Storage';
+		}
+		if (status === 'error') {
+			return 'Could not save';
+		}
+
+		return '';
+	}
+
+	function compareText(left: string, right: string): number {
+		return left.localeCompare(right, undefined, { sensitivity: 'base', numeric: true });
 	}
 
 	async function focusFirstInvalidField(errorKey: string): Promise<void> {
@@ -375,6 +485,41 @@
 			})
 	);
 	const canGoNext = $derived((step === 1 && step1Complete) || (step === 2 && step2Complete));
+	const focusRowId = $derived((form?.updatedBarBottleId ?? data.updatedBarBottleId ?? '').trim());
+	const focusRowStatus = $derived((form?.rowStatus ?? data.rowStatus ?? '').trim());
+	const selectedSortKeyFromData = $derived(data.selectedSortKey);
+	const selectedSortDirectionFromData = $derived(data.selectedSortDirection);
+	const sortedSelectedBarBottles = $derived.by(() => {
+		const rows = [...data.selectedBarBottles];
+		const direction = sortDirection === 'asc' ? 1 : -1;
+
+		rows.sort((left, right) => {
+			let comparison = 0;
+			if (sortKey === 'bottle') {
+				comparison = compareText(left.displayName, right.displayName) || compareText(left.brand, right.brand);
+			} else if (sortKey === 'area') {
+				comparison = compareText(left.location, right.location) || compareText(locationTypeLabel(left.locationType), locationTypeLabel(right.locationType));
+			} else if (sortKey === 'current') {
+				comparison = left.currentCount - right.currentCount;
+			} else if (sortKey === 'par') {
+				comparison = left.parLevel - right.parLevel;
+			} else if (sortKey === 'reorder') {
+				comparison = left.reorderLevel - right.reorderLevel;
+			} else if (sortKey === 'mode') {
+				comparison = compareText(inventoryModeLabel(left.inventoryMode), inventoryModeLabel(right.inventoryMode));
+			} else {
+				comparison = compareText(rowStatusLabel(left.id), rowStatusLabel(right.id));
+			}
+
+			if (comparison === 0) {
+				comparison = compareText(left.displayName, right.displayName) || compareText(left.location, right.location);
+			}
+
+			return comparison * direction;
+		});
+
+		return rows;
+	});
 
 	$effect(() => {
 		if (step > 1 && !step1Complete) {
@@ -459,6 +604,42 @@
 
 		void focusFirstInvalidField(firstKey);
 	});
+
+	$effect(() => {
+		if (sortInitialized) {
+			return;
+		}
+
+		sortKey = selectedSortKeyFromData;
+		sortDirection = selectedSortDirectionFromData;
+		sortInitialized = true;
+	});
+
+	$effect(() => {
+		if (typeof window === 'undefined') {
+			return;
+		}
+
+		if (!focusRowId) {
+			return;
+		}
+
+		if (focusRowStatus !== 'added' && focusRowStatus !== 'stored' && focusRowStatus !== 'saved') {
+			return;
+		}
+
+		void tick().then(() => {
+			const row = document.getElementById(`bar-bottle-row-${focusRowId}`);
+			if (!row) {
+				return;
+			}
+
+			row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			row.classList.remove('row-flash');
+			void row.clientWidth;
+			row.classList.add('row-flash');
+		});
+	});
 </script>
 
 <svelte:head>
@@ -506,6 +687,8 @@
 
 		<form method="POST" action="?/createAndStock" class="wizard" bind:this={wizardForm}>
 			<input type="hidden" name="storageAreasJson" value={storageAreasPayload} />
+			<input type="hidden" name="sort" value={sortKey} />
+			<input type="hidden" name="dir" value={sortDirection} />
 			{#if step !== 1}
 				<input type="hidden" name="name" value={name} />
 				<input type="hidden" name="barType" value={barType} />
@@ -552,9 +735,8 @@
 					<label>
 						<span>Default inventory mode</span>
 						<select name="defaultInventoryMode" bind:value={defaultInventoryMode}>
-							<option value="disabled">Disabled</option>
-							<option value="simple-counts">Simple counts</option>
-							<option value="detailed-tracking">Detailed tracking</option>
+							<option value="simple-counts">Full</option>
+							<option value="detailed-tracking">Detailed</option>
 						</select>
 						{#if form?.fieldErrors?.defaultInventoryMode}
 							<p class="field-error">{form.fieldErrors.defaultInventoryMode}</p>
@@ -853,7 +1035,7 @@
 									<td data-label="Stocked bottles">{bar.stockedCount}</td>
 									<td data-label="Manage">
 										<div class="manage-actions">
-											<a class="table-link" href={`/dashboard/bars?bar=${bar.id}`}>Manage</a>
+											<a class="table-link" href={barsUrl({ bar: bar.id })}>Manage</a>
 											<form
 												method="POST"
 												action="?/deleteBar"
@@ -890,7 +1072,7 @@
 				<div class="filter-row">
 					<a
 						class="table-link"
-						href={`/dashboard/bars?bar=${data.selectedBarId}`}
+						href={barsUrl({ bar: data.selectedBarId })}
 						aria-current={data.selectedStorageFilter ? undefined : 'page'}
 					>
 						All areas
@@ -898,7 +1080,7 @@
 					{#each data.selectedBarStorageTypes as type}
 						<a
 							class="table-link"
-							href={`/dashboard/bars?bar=${data.selectedBarId}&storage=${type}`}
+							href={barsUrl({ bar: data.selectedBarId, storage: type })}
 							aria-current={data.selectedStorageFilter === type ? 'page' : undefined}
 						>
 							{type}
@@ -907,6 +1089,8 @@
 					<form method="POST" action="?/generateStock" class="generate-form">
 						<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
 						<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
+						<input type="hidden" name="sort" value={sortKey} />
+						<input type="hidden" name="dir" value={sortDirection} />
 						<button type="submit" class="secondary tiny">Generate counts</button>
 					</form>
 				</div>
@@ -915,23 +1099,79 @@
 					<table class="bar-table">
 						<thead>
 							<tr>
-								<th scope="col">Bottle</th>
-								<th scope="col">Area</th>
-								<th scope="col">Current</th>
-								<th scope="col">Par</th>
-								<th scope="col">Reorder</th>
-								<th scope="col">Mode</th>
-								<th scope="col">Save</th>
+								<th scope="col">
+									<button type="button" class="sort-button" onclick={() => toggleSort('bottle')}>
+										Bottle
+										<span class="sort-icon" aria-hidden="true">
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('bottle') === 'asc'}><path fill="currentColor" d="M6 2 3.5 5h5L6 2z"/></svg>
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('bottle') === 'desc'}><path fill="currentColor" d="M6 10 8.5 7h-5L6 10z"/></svg>
+										</span>
+									</button>
+								</th>
+								<th scope="col">
+									<button type="button" class="sort-button" onclick={() => toggleSort('area')}>
+										Area
+										<span class="sort-icon" aria-hidden="true">
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('area') === 'asc'}><path fill="currentColor" d="M6 2 3.5 5h5L6 2z"/></svg>
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('area') === 'desc'}><path fill="currentColor" d="M6 10 8.5 7h-5L6 10z"/></svg>
+										</span>
+									</button>
+								</th>
+								<th scope="col">
+									<button type="button" class="sort-button" onclick={() => toggleSort('current')}>
+										Current
+										<span class="sort-icon" aria-hidden="true">
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('current') === 'asc'}><path fill="currentColor" d="M6 2 3.5 5h5L6 2z"/></svg>
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('current') === 'desc'}><path fill="currentColor" d="M6 10 8.5 7h-5L6 10z"/></svg>
+										</span>
+									</button>
+								</th>
+								<th scope="col">
+									<button type="button" class="sort-button" onclick={() => toggleSort('par')}>
+										Par
+										<span class="sort-icon" aria-hidden="true">
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('par') === 'asc'}><path fill="currentColor" d="M6 2 3.5 5h5L6 2z"/></svg>
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('par') === 'desc'}><path fill="currentColor" d="M6 10 8.5 7h-5L6 10z"/></svg>
+										</span>
+									</button>
+								</th>
+								<th scope="col">
+									<button type="button" class="sort-button" onclick={() => toggleSort('reorder')}>
+										Reorder
+										<span class="sort-icon" aria-hidden="true">
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('reorder') === 'asc'}><path fill="currentColor" d="M6 2 3.5 5h5L6 2z"/></svg>
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('reorder') === 'desc'}><path fill="currentColor" d="M6 10 8.5 7h-5L6 10z"/></svg>
+										</span>
+									</button>
+								</th>
+								<th scope="col">
+									<button type="button" class="sort-button" onclick={() => toggleSort('mode')}>
+										Count
+										<span class="sort-icon" aria-hidden="true">
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('mode') === 'asc'}><path fill="currentColor" d="M6 2 3.5 5h5L6 2z"/></svg>
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('mode') === 'desc'}><path fill="currentColor" d="M6 10 8.5 7h-5L6 10z"/></svg>
+										</span>
+									</button>
+								</th>
+								<th scope="col">
+									<button type="button" class="sort-button" onclick={() => toggleSort('save')}>
+										Save
+										<span class="sort-icon" aria-hidden="true">
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('save') === 'asc'}><path fill="currentColor" d="M6 2 3.5 5h5L6 2z"/></svg>
+											<svg viewBox="0 0 12 12" class:active={activeSortDirection('save') === 'desc'}><path fill="currentColor" d="M6 10 8.5 7h-5L6 10z"/></svg>
+										</span>
+									</button>
+								</th>
 							</tr>
 						</thead>
 						<tbody>
-							{#if data.selectedBarBottles.length === 0}
+							{#if sortedSelectedBarBottles.length === 0}
 								<tr>
 									<td colspan="8">No stocked bottles for this selection.</td>
 								</tr>
 							{:else}
-								{#each data.selectedBarBottles as bottle}
-									<tr>
+								{#each sortedSelectedBarBottles as bottle}
+									<tr id={`bar-bottle-row-${bottle.id}`}>
 										<td data-label="Bottle">
 											<div class="bottle-name">{bottle.displayName}</div>
 											<div class="bottle-meta">{bottle.brand} • {bottle.category}</div>
@@ -941,7 +1181,8 @@
 												<input type="hidden" name="barBottleId" value={bottle.id} />
 												<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
 												<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
-														<input type="hidden" name="isVisible" value="true" />
+														<input type="hidden" name="sort" value={sortKey} />
+														<input type="hidden" name="dir" value={sortDirection} />
 												<div class="inline-edit-grid">
 															{#if isEditingRow(bottle.id)}
 																<input name="location" value={bottle.location} aria-label="Area name" />
@@ -981,8 +1222,7 @@
 
 															{#if isEditingRow(bottle.id)}
 																<select name="inventoryMode" aria-label="Inventory mode">
-																	<option value="disabled" selected={bottle.inventoryMode === 'disabled'}>Disabled</option>
-																	<option value="simple-counts" selected={bottle.inventoryMode === 'simple-counts'}>Simple</option>
+																	<option value="simple-counts" selected={bottle.inventoryMode === 'simple-counts'}>Full</option>
 																	<option value="detailed-tracking" selected={bottle.inventoryMode === 'detailed-tracking'}>Detailed</option>
 																</select>
 															{:else}
@@ -1015,6 +1255,7 @@
 															onclick={() =>
 																openAddBottleModal({
 																	barBottleId: bottle.id,
+																		bottleId: bottle.bottleId,
 																	label: `${bottle.displayName} (${bottle.brand})`,
 																	location: bottle.location,
 																	locationType: bottle.locationType as StorageAreaType
@@ -1082,6 +1323,8 @@
 						<input type="hidden" name="barBottleId" value={duplicateFromBarBottleId} />
 						<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
 						<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
+						<input type="hidden" name="sort" value={sortKey} />
+						<input type="hidden" name="dir" value={sortDirection} />
 
 						<label>
 							<span>Bottle</span>
@@ -1438,6 +1681,19 @@
 		color: color-mix(in srgb, var(--bb-accent) 85%, #3d1208 15%);
 	}
 
+	:global(tr.row-flash) td {
+		animation: rowFlashPulse 1.2s ease-out;
+	}
+
+	@keyframes rowFlashPulse {
+		0% {
+			background: rgba(21, 128, 61, 0.24);
+		}
+		100% {
+			background: transparent;
+		}
+	}
+
 	.value-badge {
 		display: inline-flex;
 		align-items: center;
@@ -1520,6 +1776,39 @@
 		letter-spacing: 0.12em;
 		background: rgba(255, 255, 255, 0.45);
 		color: color-mix(in srgb, var(--bb-ink) 65%, var(--bb-accent) 35%);
+	}
+
+	.sort-button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		font-size: inherit;
+		font-weight: inherit;
+		text-transform: inherit;
+		letter-spacing: inherit;
+		cursor: pointer;
+	}
+
+	.sort-icon {
+		display: inline-flex;
+		flex-direction: column;
+		line-height: 1;
+		color: rgba(73, 41, 18, 0.42);
+	}
+
+	.sort-icon svg {
+		width: 0.7rem;
+		height: 0.7rem;
+	}
+
+	.sort-icon svg.active {
+		color: color-mix(in srgb, var(--bb-accent) 85%, #3d1208 15%);
 	}
 
 	.bottle-table tbody tr:last-child td,

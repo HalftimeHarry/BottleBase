@@ -46,8 +46,6 @@ type BarBottleRecord = {
 	inventoryMode?: string;
 	inventory_mode?: string;
 	notes?: string | null;
-	isVisible?: boolean;
-	is_visible?: boolean;
 };
 
 type StorageAreaType = 'well' | 'backbar' | 'cold-storage' | 'overflow';
@@ -57,6 +55,9 @@ type FieldErrors = Record<string, string>;
 const STORAGE_AREA_TYPES = new Set<StorageAreaType>(['well', 'backbar', 'cold-storage', 'overflow']);
 const BAR_TYPES = ['permanent', 'temporary', 'satellite', 'seasonal'] as const;
 const INVENTORY_MODES = ['disabled', 'simple-counts', 'detailed-tracking'] as const;
+const SORT_KEYS = new Set(['bottle', 'area', 'current', 'par', 'reorder', 'mode', 'save'] as const);
+type SortKey = 'bottle' | 'area' | 'current' | 'par' | 'reorder' | 'mode' | 'save';
+type SortDirection = 'asc' | 'desc';
 
 const storageAreaSchema = z.object({
 	id: z.string().trim().min(1, 'Storage area ID is required.'),
@@ -87,8 +88,7 @@ const updateStockSchema = z.object({
 	selectedStorageFilter: z.string().trim().optional(),
 	location: z.string().trim().min(1, 'Storage area name is required.'),
 	locationType: z.enum(['well', 'backbar', 'cold-storage', 'overflow']),
-	inventoryMode: z.enum(INVENTORY_MODES),
-	isVisible: z.enum(['true', 'false'])
+	inventoryMode: z.enum(INVENTORY_MODES)
 });
 
 const deleteBarSchema = z.object({
@@ -120,8 +120,7 @@ const addBottleToBarSchema = z.object({
 	bottleId: z.string().trim().min(1, 'Bottle ID is required.'),
 	location: z.string().trim().min(1, 'Area name is required.'),
 	locationType: z.enum(['well', 'backbar', 'cold-storage', 'overflow']),
-	inventoryMode: z.enum(INVENTORY_MODES),
-	isVisible: z.enum(['true', 'false'])
+	inventoryMode: z.enum(INVENTORY_MODES)
 });
 
 const createBottleAndAddToBarSchema = z.object({
@@ -133,8 +132,7 @@ const createBottleAndAddToBarSchema = z.object({
 	image: z.string().trim().min(1, 'Image is required.'),
 	location: z.string().trim().min(1, 'Area name is required.'),
 	locationType: z.enum(['well', 'backbar', 'cold-storage', 'overflow']),
-	inventoryMode: z.enum(INVENTORY_MODES),
-	isVisible: z.enum(['true', 'false'])
+	inventoryMode: z.enum(INVENTORY_MODES)
 });
 
 function createValidationFailure(fieldErrors: FieldErrors) {
@@ -192,15 +190,6 @@ function numberField(name: string, required = false) {
 	return {
 		name,
 		type: 'number',
-		required,
-		presentable: true
-	};
-}
-
-function boolField(name: string, required = true) {
-	return {
-		name,
-		type: 'bool',
 		required,
 		presentable: true
 	};
@@ -304,12 +293,71 @@ async function ensureBarCollections(pb: PocketBase) {
 		numberField('reorderLevel', false),
 		textField('location', false),
 		textField('locationType', false),
-		textField('notes', false, 2000),
-		boolField('isVisible', true)
+		textField('notes', false, 2000)
 	];
 
 	await ensureCollection(pb, BAR_BOTTLE_COLLECTION, barBottleFields);
 	await ensureCollectionFields(pb, BAR_BOTTLE_COLLECTION, barBottleFields);
+}
+
+function withLegacyVisibilityField(
+	payload: Record<string, unknown>,
+	fieldNames: Set<string>
+): Record<string, unknown> {
+	const next = { ...payload };
+	if (fieldNames.has('isVisible')) {
+		next.isVisible = true;
+	}
+	if (fieldNames.has('is_visible')) {
+		next.is_visible = true;
+	}
+	return next;
+}
+
+function withoutLocationType(payload: Record<string, unknown>): Record<string, unknown> {
+	const next = { ...payload };
+	delete next.locationType;
+	delete next.location_type;
+	return next;
+}
+
+async function createBarBottleWithCompatibility(
+	pb: PocketBase,
+	payload: Record<string, unknown>
+): Promise<{ id: string }> {
+	const barBottleCollection = await pb.collections.getOne(BAR_BOTTLE_COLLECTION);
+	const fieldNames = new Set((barBottleCollection.fields ?? []).map((field) => field.name));
+	const candidates: Record<string, unknown>[] = [payload];
+
+	const withVisibility = withLegacyVisibilityField(payload, fieldNames);
+	const baseWithoutLocationType = withoutLocationType(payload);
+	const withoutLocationTypeWithVisibility = withLegacyVisibilityField(baseWithoutLocationType, fieldNames);
+
+	for (const candidate of [withVisibility, baseWithoutLocationType, withoutLocationTypeWithVisibility]) {
+		const key = JSON.stringify(candidate);
+		const exists = candidates.some((item) => JSON.stringify(item) === key);
+		if (!exists) {
+			candidates.push(candidate);
+		}
+	}
+
+	let lastError: unknown = null;
+	for (const candidate of candidates) {
+		try {
+			return await pb.collection(BAR_BOTTLE_COLLECTION).create(candidate);
+		} catch (error) {
+			const status =
+				typeof error === 'object' && error !== null && 'status' in error
+					? Number(error.status)
+					: 0;
+			if (status !== 400) {
+				throw error;
+			}
+			lastError = error;
+		}
+	}
+
+	throw lastError;
 }
 
 async function fetchBarsSafe(pb: PocketBase): Promise<{
@@ -344,18 +392,6 @@ function toNumber(value: string | number | undefined): number {
 	return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function toBoolean(value: boolean | string | undefined): boolean {
-	if (typeof value === 'boolean') {
-		return value;
-	}
-
-	if (typeof value === 'string') {
-		return value.toLowerCase() === 'true';
-	}
-
-	return true;
-}
-
 function readBarBottleCounts(item: BarBottleRecord) {
 	return {
 		currentCount: toNumber(item.currentCount ?? item.current_count),
@@ -368,9 +404,29 @@ function readBarBottleMeta(item: BarBottleRecord) {
 	return {
 		location: item.location ?? '',
 		locationType: item.locationType ?? item.location_type ?? 'backbar',
-		inventoryMode: item.inventoryMode ?? item.inventory_mode ?? 'simple-counts',
-		isVisible: toBoolean(item.isVisible ?? item.is_visible)
+		inventoryMode: item.inventoryMode ?? item.inventory_mode ?? 'simple-counts'
 	};
+}
+
+function normalizeSortKey(value: string): SortKey {
+	const candidate = value.trim().toLowerCase();
+	if (SORT_KEYS.has(candidate as SortKey)) {
+		return candidate as SortKey;
+	}
+	return 'bottle';
+}
+
+function normalizeSortDirection(value: string): SortDirection {
+	return value.trim().toLowerCase() === 'desc' ? 'desc' : 'asc';
+}
+
+function addSortToRedirectParams(
+	params: URLSearchParams,
+	sortKey: SortKey,
+	sortDirection: SortDirection
+) {
+	params.set('sort', sortKey);
+	params.set('dir', sortDirection);
 }
 
 export const load = (async ({ url }) => {
@@ -403,6 +459,8 @@ export const load = (async ({ url }) => {
 	const bars = barsResult.bars;
 	const selectedBarId = url.searchParams.get('bar')?.trim() ?? '';
 	const selectedStorageFilter = url.searchParams.get('storage')?.trim() ?? '';
+	const selectedSortKey = normalizeSortKey(url.searchParams.get('sort') ?? '');
+	const selectedSortDirection = normalizeSortDirection(url.searchParams.get('dir') ?? '');
 	const stockUpdated = url.searchParams.get('updated') === '1';
 	const generatedCount = Number(url.searchParams.get('generated') ?? '0');
 	const updatedBarBottleId = url.searchParams.get('updatedBarBottleId')?.trim() ?? '';
@@ -442,12 +500,41 @@ export const load = (async ({ url }) => {
 				currentCount: counts.currentCount,
 				parLevel: counts.parLevel,
 				reorderLevel: counts.reorderLevel,
-				inventoryMode: meta.inventoryMode,
-				isVisible: meta.isVisible
+				inventoryMode: meta.inventoryMode
 			};
+		})
+		.sort((left, right) => {
+			const bottleCompare = left.displayName.localeCompare(right.displayName, undefined, {
+				sensitivity: 'base',
+				numeric: true
+			});
+			if (bottleCompare !== 0) {
+				return bottleCompare;
+			}
+
+			const brandCompare = left.brand.localeCompare(right.brand, undefined, {
+				sensitivity: 'base',
+				numeric: true
+			});
+			if (brandCompare !== 0) {
+				return brandCompare;
+			}
+
+			const areaCompare = left.location.localeCompare(right.location, undefined, {
+				sensitivity: 'base',
+				numeric: true
+			});
+			if (areaCompare !== 0) {
+				return areaCompare;
+			}
+
+			return left.locationType.localeCompare(right.locationType, undefined, {
+				sensitivity: 'base',
+				numeric: true
+			});
 		});
 
-	const visibleBarBottles = selectedStorageFilter
+	const filteredBarBottles = selectedStorageFilter
 		? selectedBarBottles.filter((item) => item.locationType === selectedStorageFilter)
 		: selectedBarBottles;
 
@@ -479,7 +566,9 @@ export const load = (async ({ url }) => {
 		})),
 		selectedBarId,
 		selectedStorageFilter,
-		selectedBarBottles: visibleBarBottles,
+		selectedSortKey,
+		selectedSortDirection,
+		selectedBarBottles: filteredBarBottles,
 		selectedBarStorageTypes,
 		selectedBarBottleAreaKeys,
 		stockUpdated,
@@ -514,6 +603,8 @@ export const actions: Actions = {
 		const defaultInventoryMode = String(formData.get('defaultInventoryMode') ?? '').trim();
 		const stockingProfile = String(formData.get('stockingProfile') ?? '').trim();
 		const storageAreasJson = String(formData.get('storageAreasJson') ?? '[]');
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
 		const storageAreas = parseStorageAreas(storageAreasJson);
 		const selectedBottleIds = formData
 			.getAll('selectedBottle')
@@ -624,28 +715,18 @@ export const actions: Actions = {
 				reorderLevel,
 				location,
 				locationType,
-				notes: null,
-				isVisible: true
+				notes: null
 			};
 
-			try {
-				await pb.collection(BAR_BOTTLE_COLLECTION).create(payload);
-			} catch (error) {
-				const status =
-					typeof error === 'object' && error !== null && 'status' in error
-						? Number(error.status)
-						: 0;
-				if (status !== 400) {
-					throw error;
-				}
-
-				const fallbackPayload = { ...payload };
-				delete (fallbackPayload as { locationType?: string }).locationType;
-				await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
-			}
+			await createBarBottleWithCompatibility(pb, payload);
 		}
 
 		const redirectTarget = barPageBeforeCreate.totalItems === 0 ? '/dashboard' : '/dashboard/bars';
+		if (redirectTarget === '/dashboard/bars') {
+			const redirectParams = new URLSearchParams();
+			addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
+			throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
+		}
 		throw redirect(303, redirectTarget);
 	},
 	updateStock: async ({ request }) => {
@@ -663,10 +744,11 @@ export const actions: Actions = {
 		const barBottleId = String(formData.get('barBottleId') ?? '').trim();
 		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
 		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
 		const location = String(formData.get('location') ?? '').trim();
 		const locationType = String(formData.get('locationType') ?? '').trim();
 		const inventoryMode = String(formData.get('inventoryMode') ?? '').trim();
-		const isVisible = String(formData.get('isVisible') ?? '').trim();
 		const currentInput = String(formData.get('currentCount') ?? '').trim();
 		const parInput = String(formData.get('parLevel') ?? '').trim();
 		const reorderInput = String(formData.get('reorderLevel') ?? '').trim();
@@ -677,8 +759,7 @@ export const actions: Actions = {
 			selectedStorageFilter,
 			location,
 			locationType,
-			inventoryMode,
-			isVisible
+			inventoryMode
 		});
 
 		const stockValidation = stockNumbersSchema.safeParse({
@@ -712,7 +793,6 @@ export const actions: Actions = {
 		}
 		setPreferredField('locationType', 'location_type', locationType);
 		setPreferredField('inventoryMode', 'inventory_mode', inventoryMode);
-		setPreferredField('isVisible', 'is_visible', isVisible === 'true');
 		setPreferredField('currentCount', 'current_count', stockValidation.data.current);
 		setPreferredField('parLevel', 'par_level', stockValidation.data.par);
 		setPreferredField('reorderLevel', 'reorder_level', stockValidation.data.reorder);
@@ -733,7 +813,6 @@ export const actions: Actions = {
 		const expectedCurrent = stockValidation.data.current;
 		const expectedPar = stockValidation.data.par;
 		const expectedReorder = stockValidation.data.reorder;
-		const expectedVisible = isVisible === 'true';
 
 		if (fieldNames.has('location') && updatedMeta.location !== location) {
 			return fail(500, {
@@ -754,15 +833,6 @@ export const actions: Actions = {
 
 		const hasInventoryMode = fieldNames.has('inventoryMode') || fieldNames.has('inventory_mode');
 		if (hasInventoryMode && updatedMeta.inventoryMode !== inventoryMode) {
-			return fail(500, {
-				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
-				updatedBarBottleId: barBottleId,
-				rowStatus: 'error'
-			});
-		}
-
-		const hasVisible = fieldNames.has('isVisible') || fieldNames.has('is_visible');
-		if (hasVisible && updatedMeta.isVisible !== expectedVisible) {
 			return fail(500, {
 				error: 'Save did not persist for this row. Please try again or refresh schema setup.',
 				updatedBarBottleId: barBottleId,
@@ -815,6 +885,7 @@ export const actions: Actions = {
 		if (selectedStorageFilter) {
 			redirectParams.set('storage', selectedStorageFilter);
 		}
+		addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
 
 		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 	},
@@ -833,6 +904,8 @@ export const actions: Actions = {
 		const barBottleId = String(formData.get('barBottleId') ?? '').trim();
 		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
 		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
 		const location = String(formData.get('location') ?? '').trim();
 		const locationType = String(formData.get('locationType') ?? '').trim();
 
@@ -895,26 +968,10 @@ export const actions: Actions = {
 			reorderLevel: counts.reorderLevel,
 			location: targetLocation,
 			locationType: targetLocationType,
-			notes: source.notes ?? null,
-			isVisible: meta.isVisible
+			notes: source.notes ?? null
 		};
 
-		let created: { id: string };
-		try {
-			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(createPayload);
-		} catch (error) {
-			const status =
-				typeof error === 'object' && error !== null && 'status' in error
-					? Number(error.status)
-					: 0;
-			if (status !== 400) {
-				throw error;
-			}
-
-			const fallbackPayload = { ...createPayload };
-			delete (fallbackPayload as { locationType?: string }).locationType;
-			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
-		}
+		const created = await createBarBottleWithCompatibility(pb, createPayload);
 
 		const redirectParams = new URLSearchParams({
 			bar: selectedBarId,
@@ -922,10 +979,8 @@ export const actions: Actions = {
 			updatedBarBottleId: created.id,
 			rowStatus: 'added'
 		});
-
-		if (selectedStorageFilter) {
-			redirectParams.set('storage', selectedStorageFilter);
-		}
+		redirectParams.set('storage', targetLocationType);
+		addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
 
 		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 	},
@@ -944,6 +999,8 @@ export const actions: Actions = {
 		const barBottleId = String(formData.get('barBottleId') ?? '').trim();
 		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
 		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
 
 		const validation = addBottleToStorageSchema.safeParse({
 			barBottleId,
@@ -999,26 +1056,10 @@ export const actions: Actions = {
 			reorderLevel: counts.reorderLevel,
 			location: targetLocation,
 			locationType: targetLocationType,
-			notes: source.notes ?? null,
-			isVisible: meta.isVisible
+			notes: source.notes ?? null
 		};
 
-		let created: { id: string };
-		try {
-			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(createPayload);
-		} catch (error) {
-			const status =
-				typeof error === 'object' && error !== null && 'status' in error
-					? Number(error.status)
-					: 0;
-			if (status !== 400) {
-				throw error;
-			}
-
-			const fallbackPayload = { ...createPayload };
-			delete (fallbackPayload as { locationType?: string }).locationType;
-			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
-		}
+		const created = await createBarBottleWithCompatibility(pb, createPayload);
 
 		const redirectParams = new URLSearchParams({
 			bar: selectedBarId,
@@ -1026,10 +1067,8 @@ export const actions: Actions = {
 			updatedBarBottleId: created.id,
 			rowStatus: 'stored'
 		});
-
-		if (selectedStorageFilter) {
-			redirectParams.set('storage', selectedStorageFilter);
-		}
+		redirectParams.set('storage', targetLocationType);
+		addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
 
 		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 	},
@@ -1047,11 +1086,12 @@ export const actions: Actions = {
 		const formData = await request.formData();
 		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
 		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
 		const bottleId = String(formData.get('bottleId') ?? '').trim();
 		const location = String(formData.get('location') ?? '').trim();
 		const locationType = String(formData.get('locationType') ?? '').trim();
 		const inventoryMode = String(formData.get('inventoryMode') ?? '').trim();
-		const isVisible = String(formData.get('isVisible') ?? '').trim();
 		const currentInput = String(formData.get('currentCount') ?? '').trim();
 		const parInput = String(formData.get('parLevel') ?? '').trim();
 		const reorderInput = String(formData.get('reorderLevel') ?? '').trim();
@@ -1062,8 +1102,7 @@ export const actions: Actions = {
 			bottleId,
 			location,
 			locationType,
-			inventoryMode,
-			isVisible
+			inventoryMode
 		});
 
 		const stockValidation = stockNumbersSchema.safeParse({
@@ -1107,26 +1146,10 @@ export const actions: Actions = {
 			reorderLevel: stockValidation.data.reorder,
 			location,
 			locationType,
-			notes: null,
-			isVisible: isVisible === 'true'
+			notes: null
 		};
 
-		let created: { id: string };
-		try {
-			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(payload);
-		} catch (error) {
-			const status =
-				typeof error === 'object' && error !== null && 'status' in error
-					? Number(error.status)
-					: 0;
-			if (status !== 400) {
-				throw error;
-			}
-
-			const fallbackPayload = { ...payload };
-			delete (fallbackPayload as { locationType?: string }).locationType;
-			created = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
-		}
+		const created = await createBarBottleWithCompatibility(pb, payload);
 
 		const redirectParams = new URLSearchParams({
 			bar: selectedBarId,
@@ -1138,6 +1161,7 @@ export const actions: Actions = {
 		if (selectedStorageFilter) {
 			redirectParams.set('storage', selectedStorageFilter);
 		}
+		addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
 
 		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 	},
@@ -1155,6 +1179,8 @@ export const actions: Actions = {
 		const formData = await request.formData();
 		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
 		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
 		const name = String(formData.get('name') ?? '').trim();
 		const brand = String(formData.get('brand') ?? '').trim();
 		const category = String(formData.get('category') ?? '').trim();
@@ -1162,7 +1188,6 @@ export const actions: Actions = {
 		const location = String(formData.get('location') ?? '').trim();
 		const locationType = String(formData.get('locationType') ?? '').trim();
 		const inventoryMode = String(formData.get('inventoryMode') ?? '').trim();
-		const isVisible = String(formData.get('isVisible') ?? '').trim();
 		const currentInput = String(formData.get('currentCount') ?? '').trim();
 		const parInput = String(formData.get('parLevel') ?? '').trim();
 		const reorderInput = String(formData.get('reorderLevel') ?? '').trim();
@@ -1176,8 +1201,7 @@ export const actions: Actions = {
 			image,
 			location,
 			locationType,
-			inventoryMode,
-			isVisible
+			inventoryMode
 		});
 
 		const stockValidation = stockNumbersSchema.safeParse({
@@ -1216,26 +1240,10 @@ export const actions: Actions = {
 			reorderLevel: stockValidation.data.reorder,
 			location,
 			locationType,
-			notes: null,
-			isVisible: isVisible === 'true'
+			notes: null
 		};
 
-		let createdBarBottle: { id: string };
-		try {
-			createdBarBottle = await pb.collection(BAR_BOTTLE_COLLECTION).create(payload);
-		} catch (error) {
-			const status =
-				typeof error === 'object' && error !== null && 'status' in error
-					? Number(error.status)
-					: 0;
-			if (status !== 400) {
-				throw error;
-			}
-
-			const fallbackPayload = { ...payload };
-			delete (fallbackPayload as { locationType?: string }).locationType;
-			createdBarBottle = await pb.collection(BAR_BOTTLE_COLLECTION).create(fallbackPayload);
-		}
+		const createdBarBottle = await createBarBottleWithCompatibility(pb, payload);
 
 		const redirectParams = new URLSearchParams({
 			bar: selectedBarId,
@@ -1247,6 +1255,7 @@ export const actions: Actions = {
 		if (selectedStorageFilter) {
 			redirectParams.set('storage', selectedStorageFilter);
 		}
+		addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
 
 		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 	},
@@ -1264,6 +1273,8 @@ export const actions: Actions = {
 		const formData = await request.formData();
 		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
 		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
 
 		const validation = generateStockSchema.safeParse({
 			selectedBarId,
@@ -1319,6 +1330,7 @@ export const actions: Actions = {
 		if (selectedStorageFilter) {
 			redirectParams.set('storage', selectedStorageFilter);
 		}
+		addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
 
 		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 	},
