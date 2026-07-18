@@ -1,5 +1,18 @@
 <script lang="ts">
-	let { data } = $props<{ data: { hasSession: boolean } }>();
+	let { data } = $props<{
+		data: {
+			hasSession: boolean;
+			bars: Array<{
+				id: string;
+				name: string;
+				barType: string;
+				defaultInventoryMode: string;
+				stockedCount: number;
+				storageAreas: string[];
+			}>;
+			barSummaryWarning: string | null;
+		};
+	}>();
 
 	const sections = [
 		{
@@ -50,6 +63,10 @@
 			</p>
 		</div>
 
+		{#if data.barSummaryWarning}
+			<p class="notice">{data.barSummaryWarning}</p>
+		{/if}
+
 			<div class="section-table-wrap">
 				<table class="section-table" aria-label="BottleBase workspace sections">
 					<thead>
@@ -72,6 +89,47 @@
 					</tbody>
 				</table>
 			</div>
+
+		<div class="bar-summary">
+			<h2>Bar And Storage Snapshot</h2>
+			<p class="summary-copy">Live summary of your bars, stocked bottles, and storage areas.</p>
+			<div class="section-table-wrap">
+				<table class="section-table" aria-label="Bar and storage summary">
+					<thead>
+						<tr>
+							<th scope="col">Bar</th>
+							<th scope="col">Type</th>
+							<th scope="col">Inventory mode</th>
+							<th scope="col">Stocked bottles</th>
+							<th scope="col">Storage areas</th>
+							<th scope="col">Manage</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#if data.bars.length === 0}
+							<tr>
+								<td colspan="6">No bars created yet.</td>
+							</tr>
+						{:else}
+							{#each data.bars as bar}
+								<tr>
+									<th scope="row" data-label="Bar">{bar.name}</th>
+									<td data-label="Type">{bar.barType}</td>
+									<td data-label="Inventory mode">{bar.defaultInventoryMode}</td>
+									<td data-label="Stocked bottles">{bar.stockedCount}</td>
+									<td data-label="Storage areas">
+										{bar.storageAreas.length > 0 ? bar.storageAreas.join(', ') : 'No storage areas yet'}
+									</td>
+									<td data-label="Manage">
+										<a class="table-link" href={`/dashboard/bars?bar=${bar.id}`}>Manage</a>
+									</td>
+								</tr>
+							{/each}
+						{/if}
+					</tbody>
+				</table>
+			</div>
+		</div>
 	</section>
 </main>
 
@@ -149,6 +207,29 @@
 		border-radius: 1rem;
 		border: 1px solid rgba(73, 41, 18, 0.1);
 		background: rgba(255, 255, 255, 0.6);
+	}
+
+	.notice {
+		margin: 0 0 1rem;
+		padding: 0.75rem 0.9rem;
+		border-radius: 0.75rem;
+		background: rgba(155, 52, 30, 0.1);
+		color: color-mix(in srgb, var(--bb-ink) 88%, var(--bb-accent) 12%);
+	}
+
+	.bar-summary {
+		margin-top: 1rem;
+	}
+
+	.bar-summary h2 {
+		margin: 0;
+		font-size: 1.2rem;
+	}
+
+	.summary-copy {
+		margin: 0.4rem 0 0.9rem;
+		line-height: 1.5;
+		color: color-mix(in srgb, var(--bb-ink) 84%, var(--bb-accent) 16%);
 	}
 
 	.section-table {
