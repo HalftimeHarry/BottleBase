@@ -57,17 +57,13 @@
 	type SortKey = 'bottle' | 'area' | 'current' | 'par' | 'reorder' | 'mode' | 'save';
 
 	const AREA_TYPE_OPTIONS: Array<{ value: StorageAreaType; label: string }> = [
-		{ value: 'well', label: 'Well' },
-		{ value: 'backbar', label: 'Backbar' },
-		{ value: 'cold-storage', label: 'Cold Storage' },
-		{ value: 'overflow', label: 'Overflow' }
+		{ value: 'well', label: 'Main' },
+		{ value: 'overflow', label: 'Storage' }
 	];
 
 	const LOCATION_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
-		{ value: 'well', label: 'Well' },
-		{ value: 'backbar', label: 'Backbar' },
-		{ value: 'cold-storage', label: 'Cold Storage' },
-		{ value: 'overflow', label: 'Overflow' }
+		{ value: 'well', label: 'Main' },
+		{ value: 'overflow', label: 'Storage' }
 	];
 
 	const profileDefaults: Record<
@@ -86,7 +82,7 @@
 			par: '2',
 			reorder: '1',
 			storageAreas: [
-				{ name: 'Main Back Bar', type: 'backbar' },
+				{ name: 'Main Back Bar', type: 'well' },
 				{ name: 'Speed Rail', type: 'well' },
 				{ name: 'Overstock Room', type: 'overflow' }
 			]
@@ -98,8 +94,8 @@
 			reorder: '0.75',
 			storageAreas: [
 				{ name: 'Service Well', type: 'well' },
-				{ name: 'Prep Shelf', type: 'backbar' },
-				{ name: 'Cold Storage', type: 'cold-storage' }
+				{ name: 'Prep Shelf', type: 'well' },
+				{ name: 'Cold Storage', type: 'overflow' }
 			]
 		},
 		'event-pop-up': {
@@ -142,6 +138,10 @@
 	let sortKey = $state<SortKey>('bottle');
 	let sortDirection = $state<'asc' | 'desc'>('asc');
 	let sortInitialized = $state(false);
+	let step1Expanded = $state(data.bars.length === 0);
+	let isSubmittingCreate = $state(false);
+	let createProgress = $state(0);
+	let createProgressTimer: ReturnType<typeof setInterval> | null = null;
 	let wizardForm = $state<HTMLFormElement | null>(null);
 	let showAddBottleModal = $state(false);
 	let duplicateFromBarBottleId = $state('');
@@ -270,6 +270,9 @@
 	function goBack(): void {
 		if (step > 1) {
 			step -= 1;
+			if (step === 1) {
+				step1Expanded = true;
+			}
 		}
 	}
 
@@ -281,6 +284,37 @@
 		if (step === 2 && step2Complete) {
 			step = 3;
 		}
+	}
+
+	function clearCreateProgressTimer(): void {
+		if (createProgressTimer) {
+			clearInterval(createProgressTimer);
+			createProgressTimer = null;
+		}
+	}
+
+	function startCreateProgress(): void {
+		clearCreateProgressTimer();
+		isSubmittingCreate = true;
+		createProgress = 6;
+
+		createProgressTimer = setInterval(() => {
+			if (createProgress >= 92) {
+				return;
+			}
+
+			const remaining = 92 - createProgress;
+			const delta = Math.max(1, Math.ceil(remaining * 0.08));
+			createProgress = Math.min(92, createProgress + delta);
+		}, 180);
+	}
+
+	function onCreateAndStockSubmit(): void {
+		if (step !== 3 || !step3Complete || isSubmittingCreate) {
+			return;
+		}
+
+		startCreateProgress();
 	}
 
 	function openAddBottleModal(source: {
@@ -358,6 +392,13 @@
 	}
 
 	function locationTypeLabel(value: string): string {
+		if (value === 'overflow') {
+			return 'Storage';
+		}
+		if (value === 'well' || value === 'backbar' || value === 'cold-storage') {
+			return 'Main';
+		}
+
 		const option = LOCATION_TYPE_OPTIONS.find((candidate) => candidate.value === value);
 		return option?.label ?? value;
 	}
@@ -602,6 +643,10 @@
 			step = targetStep;
 		}
 
+		if (targetStep === 1) {
+			step1Expanded = true;
+		}
+
 		void focusFirstInvalidField(firstKey);
 	});
 
@@ -640,6 +685,12 @@
 			row.classList.add('row-flash');
 		});
 	});
+
+	$effect(() => {
+		return () => {
+			clearCreateProgressTimer();
+		};
+	});
 </script>
 
 <svelte:head>
@@ -649,6 +700,7 @@
 <main class="workspace-shell">
 	<section class="workspace-card">
 		<div class="hero">
+			<img class="hero-logo" src="/logos/bb_logo_primary.png" alt="BottleBase" />
 			<p class="eyebrow">BottleBase</p>
 			<h1>Create and Stock a Bar</h1>
 			<p>
@@ -685,7 +737,13 @@
 			<p class="notice">Added bottle to this bar.</p>
 		{/if}
 
-		<form method="POST" action="?/createAndStock" class="wizard" bind:this={wizardForm}>
+		<form
+			method="POST"
+			action="?/createAndStock"
+			class="wizard"
+			onsubmit={onCreateAndStockSubmit}
+			bind:this={wizardForm}
+		>
 			<input type="hidden" name="storageAreasJson" value={storageAreasPayload} />
 			<input type="hidden" name="sort" value={sortKey} />
 			<input type="hidden" name="dir" value={sortDirection} />
@@ -700,11 +758,24 @@
 
 			{#if step === 1}
 			<section class="step">
-				<div class="step-heading">
+				<div class="step-heading step-heading-collapsible">
 					<span>Step 1</span>
 					<h2>Create Bar</h2>
+					<button
+						type="button"
+						class="step-toggle"
+						onclick={() => {
+							step1Expanded = !step1Expanded;
+						}}
+						aria-expanded={step1Expanded}
+						aria-controls="step-1-panel"
+						aria-label={step1Expanded ? 'Collapse Create Bar section' : 'Expand Create Bar section'}
+					>
+						<span aria-hidden="true">{step1Expanded ? '−' : '+'}</span>
+					</button>
 				</div>
-				<div class="step-grid">
+				{#if step1Expanded}
+				<div class="step-grid" id="step-1-panel">
 					<label>
 						<span>Bar name</span>
 						<input
@@ -743,6 +814,11 @@
 						{/if}
 					</label>
 				</div>
+				{:else}
+					<div id="step-1-panel" class="collapsed-step-content">
+						<p class="collapsed-hint">Tap + to set bar name, type, and default inventory mode.</p>
+					</div>
+				{/if}
 
 			</section>
 			{/if}
@@ -993,15 +1069,28 @@
 			</section>
 			{/if}
 
-			<div class="paginator paginator-bottom" aria-label="Form navigation bottom">
-				<button type="button" class="secondary" onclick={goBack} disabled={step === 1}>Back</button>
-				<p class="step-progress">Step {step} of {TOTAL_STEPS}</p>
-				{#if step < TOTAL_STEPS}
-					<button type="button" onclick={goNext} disabled={!canGoNext}>Next</button>
-				{:else}
-					<button type="submit" disabled={!step3Complete}>Create bar and stock it</button>
-				{/if}
-			</div>
+			{#if step !== 1 || step1Expanded}
+				<div class="paginator paginator-bottom" aria-label="Form navigation bottom">
+					<button type="button" class="secondary" onclick={goBack} disabled={step === 1}>Back</button>
+					<p class="step-progress">Step {step} of {TOTAL_STEPS}</p>
+					{#if step < TOTAL_STEPS}
+						<button type="button" onclick={goNext} disabled={!canGoNext}>Next</button>
+					{:else}
+						<button type="submit" disabled={!step3Complete || isSubmittingCreate}>
+							{isSubmittingCreate ? 'Creating...' : 'Create bar and stock it'}
+						</button>
+					{/if}
+				</div>
+			{/if}
+
+			{#if isSubmittingCreate}
+				<div class="create-progress" role="status" aria-live="polite">
+					<p>Creating bar and stocking bottles. This can take a moment.</p>
+					<div class="create-progress-track" aria-hidden="true">
+						<div class="create-progress-fill" style={`width: ${createProgress}%`}></div>
+					</div>
+				</div>
+			{/if}
 		</form>
 
 		<section class="records-panel">
@@ -1083,7 +1172,7 @@
 							href={barsUrl({ bar: data.selectedBarId, storage: type })}
 							aria-current={data.selectedStorageFilter === type ? 'page' : undefined}
 						>
-							{type}
+							{locationTypeLabel(type)}
 						</a>
 					{/each}
 					<form method="POST" action="?/generateStock" class="generate-form">
@@ -1171,12 +1260,12 @@
 								</tr>
 							{:else}
 								{#each sortedSelectedBarBottles as bottle}
-									<tr id={`bar-bottle-row-${bottle.id}`}>
+									<tr id={`bar-bottle-row-${bottle.id}`} class="bar-bottle-row">
 										<td data-label="Bottle">
 											<div class="bottle-name">{bottle.displayName}</div>
 											<div class="bottle-meta">{bottle.brand} • {bottle.category}</div>
 										</td>
-										<td colspan="7">
+										<td colspan="7" class="bar-bottle-controls">
 											<form method="POST" action="?/updateStock" class="inline-edit-form">
 												<input type="hidden" name="barBottleId" value={bottle.id} />
 												<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
@@ -1184,52 +1273,65 @@
 														<input type="hidden" name="sort" value={sortKey} />
 														<input type="hidden" name="dir" value={sortDirection} />
 												<div class="inline-edit-grid">
-															{#if isEditingRow(bottle.id)}
-																<input name="location" value={bottle.location} aria-label="Area name" />
-															{:else}
-																<div class="value-badge" aria-label="Area name">{bottle.location}</div>
-															{/if}
+													<div class="inline-cell" data-mobile-label="Area">
+														{#if isEditingRow(bottle.id)}
+															<input name="location" value={bottle.location} aria-label="Area name" />
+														{:else}
+															<div class="value-badge" aria-label="Area name">{bottle.location}</div>
+														{/if}
+													</div>
 
-															{#if isEditingRow(bottle.id)}
-																<select name="locationType" aria-label="Area type">
-																	{#each LOCATION_TYPE_OPTIONS as option}
-																		<option value={option.value} selected={bottle.locationType === option.value}
-																			>{option.label}</option
-																		>
-																	{/each}
-																</select>
-															{:else}
-																<div class="value-badge" aria-label="Area type">{locationTypeLabel(bottle.locationType)}</div>
-															{/if}
+													<div class="inline-cell" data-mobile-label="Type">
+														{#if isEditingRow(bottle.id)}
+															<select name="locationType" aria-label="Area type">
+																{#each LOCATION_TYPE_OPTIONS as option}
+																	<option value={option.value} selected={bottle.locationType === option.value}
+																		>{option.label}</option
+																	>
+																{/each}
+															</select>
+														{:else}
+															<div class="value-badge" aria-label="Area type">{locationTypeLabel(bottle.locationType)}</div>
+														{/if}
+													</div>
 
-															{#if isEditingRow(bottle.id)}
-																<input name="currentCount" type="number" min="0" step="0.25" value={bottle.currentCount} aria-label="Current count" />
-															{:else}
-																<div class="value-badge" aria-label="Current count">{bottle.currentCount}</div>
-															{/if}
+													<div class="inline-cell" data-mobile-label="Current">
+														{#if isEditingRow(bottle.id)}
+															<input name="currentCount" type="number" min="0" step="0.25" value={bottle.currentCount} aria-label="Current count" />
+														{:else}
+															<div class="value-badge" aria-label="Current count">{bottle.currentCount}</div>
+														{/if}
+													</div>
 
-															{#if isEditingRow(bottle.id)}
-																<input name="parLevel" type="number" min="0" step="0.25" value={bottle.parLevel} aria-label="Par level" />
-															{:else}
-																<div class="value-badge" aria-label="Par level">{bottle.parLevel}</div>
-															{/if}
+													<div class="inline-cell" data-mobile-label="Par">
+														{#if isEditingRow(bottle.id)}
+															<input name="parLevel" type="number" min="0" step="0.25" value={bottle.parLevel} aria-label="Par level" />
+														{:else}
+															<div class="value-badge" aria-label="Par level">{bottle.parLevel}</div>
+														{/if}
+													</div>
 
-															{#if isEditingRow(bottle.id)}
-																<input name="reorderLevel" type="number" min="0" step="0.25" value={bottle.reorderLevel} aria-label="Reorder level" />
-															{:else}
-																<div class="value-badge" aria-label="Reorder level">{bottle.reorderLevel}</div>
-															{/if}
+													<div class="inline-cell" data-mobile-label="Reorder">
+														{#if isEditingRow(bottle.id)}
+															<input name="reorderLevel" type="number" min="0" step="0.25" value={bottle.reorderLevel} aria-label="Reorder level" />
+														{:else}
+															<div class="value-badge" aria-label="Reorder level">{bottle.reorderLevel}</div>
+														{/if}
+													</div>
 
-															{#if isEditingRow(bottle.id)}
-																<select name="inventoryMode" aria-label="Inventory mode">
-																	<option value="simple-counts" selected={bottle.inventoryMode === 'simple-counts'}>Full</option>
-																	<option value="detailed-tracking" selected={bottle.inventoryMode === 'detailed-tracking'}>Detailed</option>
-																</select>
-															{:else}
-																<div class="value-badge" aria-label="Inventory mode">{inventoryModeLabel(bottle.inventoryMode)}</div>
-															{/if}
+													<div class="inline-cell" data-mobile-label="Count">
+														{#if isEditingRow(bottle.id)}
+															<select name="inventoryMode" aria-label="Inventory mode">
+																<option value="simple-counts" selected={bottle.inventoryMode === 'simple-counts'}>Full</option>
+																<option value="detailed-tracking" selected={bottle.inventoryMode === 'detailed-tracking'}>Detailed</option>
+															</select>
+														{:else}
+															<div class="value-badge" aria-label="Inventory mode">{inventoryModeLabel(bottle.inventoryMode)}</div>
+														{/if}
+													</div>
 
-													<div class="row-action">
+													<div class="inline-cell inline-cell-actions" data-mobile-label="Actions">
+														<div class="row-action">
 																{#if isEditingRow(bottle.id)}
 																	<button type="submit" class="icon-button save-button" aria-label="Save row" title="Save">
 																		<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -1247,7 +1349,7 @@
 																		Edit
 																	</button>
 																{/if}
-														<button
+																<button
 															type="button"
 															class="tiny icon-button add-button"
 															aria-label="Duplicate to new area"
@@ -1268,7 +1370,7 @@
 																/>
 															</svg>
 														</button>
-														<button
+															<button
 															type="submit"
 															formaction="?/addBottleToStorage"
 															formmethod="POST"
@@ -1283,17 +1385,18 @@
 																/>
 															</svg>
 														</button>
-														{#if (form?.updatedBarBottleId ?? data.updatedBarBottleId) === bottle.id}
-															{#if (form?.rowStatus ?? data.rowStatus) === 'saved'}
-																<p class="row-feedback row-feedback-success" role="status">Saved</p>
-															{:else if (form?.rowStatus ?? data.rowStatus) === 'added'}
-																<p class="row-feedback row-feedback-success" role="status">Duplicated</p>
-															{:else if (form?.rowStatus ?? data.rowStatus) === 'stored'}
-																<p class="row-feedback row-feedback-success" role="status">Storage</p>
-															{:else if (form?.rowStatus ?? data.rowStatus) === 'error'}
-																<p class="row-feedback row-feedback-error" role="alert">Could not save</p>
+															{#if (form?.updatedBarBottleId ?? data.updatedBarBottleId) === bottle.id}
+																{#if (form?.rowStatus ?? data.rowStatus) === 'saved'}
+																	<p class="row-feedback row-feedback-success" role="status">Saved</p>
+																{:else if (form?.rowStatus ?? data.rowStatus) === 'added'}
+																	<p class="row-feedback row-feedback-success" role="status">Duplicated</p>
+																{:else if (form?.rowStatus ?? data.rowStatus) === 'stored'}
+																	<p class="row-feedback row-feedback-success" role="status">Storage</p>
+																{:else if (form?.rowStatus ?? data.rowStatus) === 'error'}
+																	<p class="row-feedback row-feedback-error" role="alert">Could not save</p>
+																{/if}
 															{/if}
-														{/if}
+														</div>
 													</div>
 												</div>
 											</form>
@@ -1402,6 +1505,13 @@
 	.hero p {
 		margin-top: 0.6rem;
 		line-height: 1.6;
+
+	.hero-logo {
+		display: block;
+		width: min(13rem, 72vw);
+		height: auto;
+		margin-bottom: 0.7rem;
+	}
 		max-width: 68ch;
 	}
 
@@ -1442,12 +1552,50 @@
 		gap: 0.6rem;
 	}
 
+	.step-heading-collapsible {
+		align-items: center;
+	}
+
+	.step-heading-collapsible h2 {
+		margin-right: auto;
+	}
+
 	.step-heading span {
 		font-size: 0.78rem;
 		font-weight: 700;
 		letter-spacing: 0.11em;
 		text-transform: uppercase;
 		color: color-mix(in srgb, var(--bb-ink) 65%, var(--bb-accent) 35%);
+	}
+
+	.step-toggle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2rem;
+		height: 2rem;
+		padding: 0;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--bb-accent) 88%, #3d1208 12%);
+		line-height: 1;
+		font-size: 1.3rem;
+		font-weight: 700;
+	}
+
+	.step-toggle span {
+		color: #fff;
+		letter-spacing: 0;
+	}
+
+	.collapsed-hint {
+		margin-top: 0.8rem;
+		font-size: 0.92rem;
+		line-height: 1.5;
+		color: color-mix(in srgb, var(--bb-ink) 78%, var(--bb-accent) 22%);
+	}
+
+	.collapsed-step-content {
+		margin-top: 0.2rem;
 	}
 
 	.step-grid {
@@ -1512,6 +1660,37 @@
 
 	.paginator-bottom {
 		margin-top: 0.8rem;
+	}
+
+	.create-progress {
+		margin-top: 0.75rem;
+		padding: 0.8rem 0.9rem;
+		border-radius: 0.9rem;
+		border: 1px solid rgba(73, 41, 18, 0.12);
+		background: rgba(255, 255, 255, 0.58);
+		display: grid;
+		gap: 0.5rem;
+	}
+
+	.create-progress p {
+		font-size: 0.9rem;
+		line-height: 1.4;
+		color: color-mix(in srgb, var(--bb-ink) 82%, var(--bb-accent) 18%);
+	}
+
+	.create-progress-track {
+		height: 0.58rem;
+		border-radius: 999px;
+		overflow: hidden;
+		background: rgba(73, 41, 18, 0.16);
+	}
+
+	.create-progress-fill {
+		height: 100%;
+		min-width: 0.8rem;
+		border-radius: 999px;
+		background: linear-gradient(90deg, #9b341e 0%, #d97706 100%);
+		transition: width 180ms ease-out;
 	}
 
 	.step-progress {
@@ -1628,6 +1807,14 @@
 		align-items: center;
 	}
 
+	.inline-cell {
+		min-width: 0;
+	}
+
+	.inline-cell::before {
+		content: none;
+	}
+
 	.inline-edit-grid input[type='number'] {
 		max-width: 5.25rem;
 		text-align: center;
@@ -1713,6 +1900,17 @@
 	.inline-edit-grid .value-badge:nth-child(2) {
 		justify-content: flex-start;
 		padding-inline: 0.65rem;
+	}
+
+	.bar-table tbody tr.bar-bottle-row .value-badge {
+		display: block;
+		min-height: 0;
+		padding: 0;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		font-weight: 600;
+		white-space: normal;
 	}
 
 	.modal-backdrop {
@@ -1930,6 +2128,70 @@
 			letter-spacing: 0.08em;
 			text-transform: uppercase;
 			color: color-mix(in srgb, var(--bb-ink) 58%, var(--bb-accent) 42%);
+		}
+
+		.bar-table tbody tr.bar-bottle-row {
+			padding: 0.9rem;
+		}
+
+		.bar-table tbody tr.bar-bottle-row td[data-label='Bottle'] {
+			display: block;
+			padding-bottom: 0.45rem;
+		}
+
+		.bar-table tbody tr.bar-bottle-row td[data-label='Bottle']::before {
+			display: none;
+		}
+
+		.bar-table tbody tr.bar-bottle-row td.bar-bottle-controls {
+			display: block;
+			padding-top: 0;
+		}
+
+		.bar-table tbody tr.bar-bottle-row td.bar-bottle-controls::before {
+			display: none;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-edit-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.5rem 0.6rem;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-cell {
+			display: grid;
+			grid-template-columns: 5.4rem minmax(0, 1fr);
+			gap: 0.5rem;
+			align-items: center;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-cell::before {
+			content: attr(data-mobile-label);
+			font-size: 0.72rem;
+			font-weight: 700;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+			color: color-mix(in srgb, var(--bb-ink) 58%, var(--bb-accent) 42%);
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-cell-actions {
+			grid-column: 1 / -1;
+			grid-template-columns: 1fr;
+			justify-items: end;
+			padding-top: 0.2rem;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-cell-actions::before {
+			justify-self: start;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .row-action {
+			width: 100%;
+			justify-content: flex-end;
+			flex-wrap: wrap;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-edit-grid input[type='number'] {
+			max-width: none;
 		}
 	}
 </style>

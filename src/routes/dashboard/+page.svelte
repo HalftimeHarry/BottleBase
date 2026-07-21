@@ -67,29 +67,6 @@
 			<p class="notice">{data.barSummaryWarning}</p>
 		{/if}
 
-			<div class="section-table-wrap">
-				<table class="section-table" aria-label="BottleBase workspace sections">
-					<thead>
-						<tr>
-							<th scope="col">Section</th>
-							<th scope="col">Purpose</th>
-							<th scope="col">Status</th>
-							<th scope="col">Open</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each sections as section}
-							<tr>
-								<th scope="row" data-label="Section">{section.title}</th>
-								<td data-label="Purpose">{section.body}</td>
-								<td data-label="Status"><span class="status-pill">{section.status}</span></td>
-								<td data-label="Open"><a class="table-link" href={section.href}>Open</a></td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-
 		<div class="bar-summary">
 			<h2>Bar And Storage Snapshot</h2>
 			<p class="summary-copy">Live summary of your bars, stocked bottles, and storage areas.</p>
@@ -130,6 +107,30 @@
 				</table>
 			</div>
 		</div>
+
+			<div class="section-table-wrap">
+				<table class="section-table" aria-label="BottleBase workspace sections">
+					<thead>
+						<tr>
+							<th scope="col">Section</th>
+							<th scope="col">Purpose</th>
+							<th scope="col">Status</th>
+							<th scope="col">Open</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each sections as section}
+							<tr>
+								<th scope="row" data-label="Section">{section.title}</th>
+								<td data-label="Purpose">{section.body}</td>
+								<td data-label="Status"><span class="status-pill">{section.status}</span></td>
+								<td data-label="Open"><a class="table-link" href={section.href}>Open</a></td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+
 	</section>
 </main>
 
@@ -218,7 +219,7 @@
 	}
 
 	.bar-summary {
-		margin-top: 1rem;
+		margin: 0 0 1rem;
 	}
 
 	.bar-summary h2 {

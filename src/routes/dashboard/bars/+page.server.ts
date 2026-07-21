@@ -408,6 +408,18 @@ function readBarBottleMeta(item: BarBottleRecord) {
 	};
 }
 
+function normalizeStorageValue(value: string): string {
+	return value.trim().toLowerCase();
+}
+
+function isStorageOverflowRow(item: BarBottleRecord): boolean {
+	const meta = readBarBottleMeta(item);
+	return (
+		normalizeStorageValue(meta.location) === 'storage' &&
+		normalizeStorageValue(meta.locationType) === 'overflow'
+	);
+}
+
 function normalizeSortKey(value: string): SortKey {
 	const candidate = value.trim().toLowerCase();
 	if (SORT_KEYS.has(candidate as SortKey)) {
@@ -1031,17 +1043,18 @@ export const actions: Actions = {
 		const existingStorageRows = await pb.collection(BAR_BOTTLE_COLLECTION).getFullList<BarBottleRecord>({
 			filter: `bar = \"${sourceBarId}\" && bottle = \"${sourceBottleId}\"`
 		});
-		const storageAlreadyExists = existingStorageRows.some((item) => {
-			const itemMeta = readBarBottleMeta(item);
-			return itemMeta.location === targetLocation && itemMeta.locationType === targetLocationType;
-		});
+		const existingStorageRow = existingStorageRows.find((item) => isStorageOverflowRow(item));
 
-		if (storageAlreadyExists) {
-			return fail(409, {
-				error: 'This bottle is already in Storage / Overflow.',
-				updatedBarBottleId: barBottleId,
-				rowStatus: 'error'
+		if (existingStorageRow) {
+			const redirectParams = new URLSearchParams({
+				bar: selectedBarId,
+				updatedBarBottleId: existingStorageRow.id,
+				rowStatus: 'stored'
 			});
+			redirectParams.set('storage', targetLocationType);
+			addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
+
+			throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 		}
 
 		const meta = readBarBottleMeta(source);

@@ -4,6 +4,7 @@
 
 <main class="setup-shell">
 	<section class="setup-card">
+		<img class="brand-logo" src="/logos/bb_logo_primary.png" alt="BottleBase" />
 		<p class="eyebrow">BottleBase Setup</p>
 		<h1>Create Your First Bar</h1>
 		<p>
@@ -37,6 +38,13 @@
 		background: color-mix(in srgb, var(--bb-card) 90%, white 10%);
 		box-shadow: 0 24px 52px rgba(20, 15, 10, 0.28);
 		border: 1px solid rgba(73, 41, 18, 0.12);
+	}
+
+	.brand-logo {
+		display: block;
+		width: min(13rem, 72vw);
+		height: auto;
+		margin-bottom: 0.7rem;
 	}
 
 	.eyebrow {
