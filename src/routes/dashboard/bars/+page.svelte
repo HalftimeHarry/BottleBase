@@ -979,7 +979,7 @@
 										<div class="bottle-name">{bottle.name}</div>
 										<div class="bottle-meta">{bottle.brand} • {bottle.category}</div>
 									</td>
-									<td data-label="Storage area">
+									<td data-label="Storage area" class="justify-between">
 										<select
 											name={`storageArea_${bottle.id}`}
 											value={valueForBottle(bottle.id, 'storageAreaId')}
@@ -1175,13 +1175,22 @@
 							{locationTypeLabel(type)}
 						</a>
 					{/each}
-					<form method="POST" action="?/generateStock" class="generate-form">
-						<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
-						<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
-						<input type="hidden" name="sort" value={sortKey} />
-						<input type="hidden" name="dir" value={sortDirection} />
-						<button type="submit" class="secondary tiny">Generate counts</button>
-					</form>
+					<div class="filter-actions">
+						<form method="POST" action="?/generateStock" class="generate-form">
+							<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
+							<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
+							<input type="hidden" name="sort" value={sortKey} />
+							<input type="hidden" name="dir" value={sortDirection} />
+							<button type="submit" class="secondary tiny">Generate counts</button>
+						</form>
+						<form method="GET" action="/dashboard/bars/report" class="report-form">
+							<input type="hidden" name="bar" value={data.selectedBarId} />
+							<input type="hidden" name="storage" value={data.selectedStorageFilter} />
+							<input type="hidden" name="sort" value={sortKey} />
+							<input type="hidden" name="dir" value={sortDirection} />
+							<button type="submit" class="secondary tiny">PDF report</button>
+						</form>
+					</div>
 				</div>
 
 				<div class="table-wrap">
@@ -1281,7 +1290,7 @@
 														{/if}
 													</div>
 
-													<div class="inline-cell" data-mobile-label="Type">
+													<div class="inline-cell inline-cell-type" data-mobile-label="Type">
 														{#if isEditingRow(bottle.id)}
 															<select name="locationType" aria-label="Area type">
 																{#each LOCATION_TYPE_OPTIONS as option}
@@ -1776,6 +1785,13 @@
 		margin-left: auto;
 	}
 
+	.filter-actions {
+		margin-left: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
 	.manage-actions {
 		display: flex;
 		align-items: center;
@@ -1850,6 +1866,10 @@
 
 	.storage-button {
 		background: #475569;
+	}
+
+	.justify-between {
+		justify-content: space-between;
 	}
 
 	.row-feedback {
@@ -2120,6 +2140,13 @@
 			gap: 0.7rem;
 		}
 
+		.bottle-table tbody td.justify-between[data-label='Storage area'] {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 1.35rem;
+		}
+
 		.bottle-table tbody td::before,
 		.bar-table tbody td::before {
 			content: attr(data-label);
@@ -2171,6 +2198,10 @@
 			letter-spacing: 0.08em;
 			text-transform: uppercase;
 			color: color-mix(in srgb, var(--bb-ink) 58%, var(--bb-accent) 42%);
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-cell-type::before {
+			color: #fff;
 		}
 
 		.bar-table tbody tr.bar-bottle-row .inline-cell-actions {
