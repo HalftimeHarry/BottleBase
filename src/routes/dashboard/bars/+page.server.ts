@@ -9,12 +9,14 @@ type BottleRecord = {
 	name: string;
 	brand: string;
 	category: string;
+	image?: string;
 };
 
 type ImageRecord = {
 	id: string;
 	name: string;
 	slug: string;
+	image?: string;
 };
 
 type BarRecord = {
@@ -93,6 +95,12 @@ const updateStockSchema = z.object({
 
 const deleteBarSchema = z.object({
 	barId: z.string().trim().min(1, 'Bar ID is required.')
+});
+
+const deleteBarBottleSchema = z.object({
+	barBottleId: z.string().trim().min(1, 'Bar bottle ID is required.'),
+	selectedBarId: z.string().trim().min(1, 'Bar ID is required.'),
+	selectedStorageFilter: z.string().trim().optional()
 });
 
 const generateStockSchema = z.object({
@@ -392,6 +400,24 @@ function toNumber(value: string | number | undefined): number {
 	return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function stripFileExtension(value: string): string {
+	return value.replace(/\.[a-z0-9]{2,5}$/i, '');
+}
+
+function resolveBarBottleName(params: { bottleName?: string; displayName?: string }): string {
+	const bottleName = stripFileExtension(params.bottleName?.trim() ?? '');
+	if (bottleName) {
+		return bottleName;
+	}
+
+	const displayName = stripFileExtension(params.displayName?.trim() ?? '');
+	if (displayName) {
+		return displayName;
+	}
+
+	return 'Unknown bottle';
+}
+
 function readBarBottleCounts(item: BarBottleRecord) {
 	return {
 		currentCount: toNumber(item.currentCount ?? item.current_count),
@@ -410,6 +436,11 @@ function readBarBottleMeta(item: BarBottleRecord) {
 
 function normalizeStorageValue(value: string): string {
 	return value.trim().toLowerCase();
+}
+
+function isTrackableInventoryCategory(value: string): boolean {
+	const normalized = value.trim().toLowerCase();
+	return normalized !== 'cocktail' && normalized !== 'cocktails';
 }
 
 function isStorageOverflowRow(item: BarBottleRecord): boolean {
@@ -457,11 +488,11 @@ export const load = (async ({ url }) => {
 
 	const [bottles, images, stockedBottles, barsResult] = await Promise.all([
 		pb.collection(BOTTLE_COLLECTION).getFullList<BottleRecord>({
-			fields: 'id,name,brand,category',
+			fields: 'id,name,brand,category,image',
 			sort: 'name'
 		}),
 		pb.collection(IMAGE_COLLECTION).getFullList<ImageRecord>({
-			fields: 'id,name,slug',
+			fields: 'id,name,slug,image',
 			sort: 'name'
 		}),
 		pb.collection(BAR_BOTTLE_COLLECTION).getFullList<BarBottleRecord>(),
@@ -469,8 +500,10 @@ export const load = (async ({ url }) => {
 	]);
 
 	const bars = barsResult.bars;
+	const pocketBaseUrl = env.POCKETBASE_URL?.replace(/\/$/, '') ?? '';
 	const selectedBarId = url.searchParams.get('bar')?.trim() ?? '';
 	const selectedStorageFilter = url.searchParams.get('storage')?.trim() ?? '';
+	const selectedCategoryFilter = url.searchParams.get('category')?.trim() ?? '';
 	const selectedSortKey = normalizeSortKey(url.searchParams.get('sort') ?? '');
 	const selectedSortDirection = normalizeSortDirection(url.searchParams.get('dir') ?? '');
 	const stockUpdated = url.searchParams.get('updated') === '1';
@@ -498,13 +531,23 @@ export const load = (async ({ url }) => {
 		.map((item) => {
 			const bottleRef = item.bottle ?? item.bottleId ?? '';
 			const bottle = bottles.find((candidate) => candidate.id === bottleRef);
+			const linkedImage = bottle?.image
+				? images.find((candidate) => candidate.id === bottle.image)
+				: undefined;
+			const imageUrl =
+				pocketBaseUrl && linkedImage?.image
+					? `${pocketBaseUrl}/api/files/${IMAGE_COLLECTION}/${linkedImage.id}/${linkedImage.image}`
+					: null;
 			const counts = readBarBottleCounts(item);
 			const meta = readBarBottleMeta(item);
 			return {
 				id: item.id,
 				barId: item.bar ?? item.barId ?? '',
 				bottleId: bottleRef,
-				displayName: item.displayName ?? bottle?.name ?? 'Unknown bottle',
+				displayName: resolveBarBottleName({
+					bottleName: bottle?.name,
+					displayName: item.displayName
+				}),
 				brand: bottle?.brand ?? 'Unknown brand',
 				category: bottle?.category ?? 'Unknown category',
 				location: meta.location,
@@ -512,9 +555,11 @@ export const load = (async ({ url }) => {
 				currentCount: counts.currentCount,
 				parLevel: counts.parLevel,
 				reorderLevel: counts.reorderLevel,
-				inventoryMode: meta.inventoryMode
+				inventoryMode: meta.inventoryMode,
+				imageUrl
 			};
 		})
+		.filter((item) => isTrackableInventoryCategory(item.category))
 		.sort((left, right) => {
 			const bottleCompare = left.displayName.localeCompare(right.displayName, undefined, {
 				sensitivity: 'base',
@@ -546,12 +591,21 @@ export const load = (async ({ url }) => {
 			});
 		});
 
-	const filteredBarBottles = selectedStorageFilter
+	const filteredByStorage = selectedStorageFilter
 		? selectedBarBottles.filter((item) => item.locationType === selectedStorageFilter)
 		: selectedBarBottles;
 
+	const filteredBarBottles = selectedCategoryFilter
+		? filteredByStorage.filter(
+				(item) => item.category.toLowerCase() === selectedCategoryFilter.toLowerCase()
+			)
+		: filteredByStorage;
+
 	const selectedBarStorageTypes = [...new Set(selectedBarBottles.map((item) => item.locationType))].filter(
 		(value): value is StorageAreaType => STORAGE_AREA_TYPES.has(value as StorageAreaType)
+	);
+	const selectedBarCategories = [...new Set(selectedBarBottles.map((item) => item.category))].sort(
+		(left, right) => left.localeCompare(right, undefined, { sensitivity: 'base', numeric: true })
 	);
 	const selectedBarBottleAreaKeys = [
 		...new Set(
@@ -564,7 +618,7 @@ export const load = (async ({ url }) => {
 	];
 
 	return {
-		bottles,
+		bottles: bottles.filter((item) => isTrackableInventoryCategory(item.category)),
 		images,
 		bars: bars.map((bar) => ({
 			id: bar.id ?? '',
@@ -578,10 +632,12 @@ export const load = (async ({ url }) => {
 		})),
 		selectedBarId,
 		selectedStorageFilter,
+		selectedCategoryFilter,
 		selectedSortKey,
 		selectedSortDirection,
 		selectedBarBottles: filteredBarBottles,
 		selectedBarStorageTypes,
+		selectedBarCategories,
 		selectedBarBottleAreaKeys,
 		stockUpdated,
 		generatedCount: Number.isFinite(generatedCount) ? generatedCount : 0,
@@ -1371,5 +1427,44 @@ export const actions: Actions = {
 		await pb.collection(BAR_COLLECTION).delete(barId);
 
 		throw redirect(303, '/dashboard/bars');
+	},
+	deleteBarBottle: async ({ request }) => {
+		const pb = await createAdminClient();
+
+		if (!pb) {
+			return fail(500, {
+				error: 'PocketBase admin credentials are required to delete bottle rows.'
+			});
+		}
+
+		await ensureBarCollections(pb);
+
+		const formData = await request.formData();
+		const barBottleId = String(formData.get('barBottleId') ?? '').trim();
+		const selectedBarId = String(formData.get('selectedBarId') ?? '').trim();
+		const selectedStorageFilter = String(formData.get('selectedStorageFilter') ?? '').trim();
+		const selectedSortKey = normalizeSortKey(String(formData.get('sort') ?? ''));
+		const selectedSortDirection = normalizeSortDirection(String(formData.get('dir') ?? ''));
+
+		const validation = deleteBarBottleSchema.safeParse({
+			barBottleId,
+			selectedBarId,
+			selectedStorageFilter
+		});
+		if (!validation.success) {
+			return fail(400, {
+				error: 'Unable to delete bottle row. Refresh and try again.'
+			});
+		}
+
+		await pb.collection(BAR_BOTTLE_COLLECTION).delete(barBottleId);
+
+		const redirectParams = new URLSearchParams({ bar: selectedBarId });
+		if (selectedStorageFilter) {
+			redirectParams.set('storage', selectedStorageFilter);
+		}
+		addSortToRedirectParams(redirectParams, selectedSortKey, selectedSortDirection);
+
+		throw redirect(303, `/dashboard/bars?${redirectParams.toString()}`);
 	}
 };

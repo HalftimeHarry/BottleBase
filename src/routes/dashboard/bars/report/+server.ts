@@ -42,6 +42,31 @@ type ReportRow = {
 	reorderLevel: number;
 };
 
+type RowTone = 'main' | 'storage' | 'neutral';
+
+type PrintableRow = {
+	cells: [string, string, string];
+	tone: RowTone;
+};
+
+function stripFileExtension(value: string): string {
+	return value.replace(/\.[a-z0-9]{2,5}$/i, '');
+}
+
+function resolveReportBottleName(params: { bottleName?: string; displayName?: string }): string {
+	const bottleName = stripFileExtension(params.bottleName?.trim() ?? '');
+	if (bottleName) {
+		return bottleName;
+	}
+
+	const displayName = stripFileExtension(params.displayName?.trim() ?? '');
+	if (displayName) {
+		return displayName;
+	}
+
+	return 'Unknown bottle';
+}
+
 const BOTTLE_COLLECTION = env.POCKETBASE_BOTTLE_COLLECTION ?? 'bottles';
 const BAR_COLLECTION = env.POCKETBASE_BAR_COLLECTION ?? 'bars';
 const BAR_BOTTLE_COLLECTION = env.POCKETBASE_BAR_BOTTLE_COLLECTION ?? 'bar_bottles';
@@ -75,16 +100,36 @@ function readBarBottleMeta(item: BarBottleRecord) {
 function locationTypeLabel(type: string): string {
 	switch (type) {
 		case 'well':
-			return 'Main';
+			return 'Main Area';
 		case 'backbar':
-			return 'Back Bar';
+			return 'Main Area';
 		case 'cold-storage':
-			return 'Cold Storage';
+			return 'Main Area';
 		case 'overflow':
-			return 'Overflow';
+			return 'Storage Area';
 		default:
-			return type || 'Unknown';
+			return type ? `${type} Area` : 'Unknown Area';
 	}
+}
+
+function rowToneForLocationType(type: string): RowTone {
+	if (type === 'overflow') {
+		return 'storage';
+	}
+	if (type === 'well' || type === 'backbar' || type === 'cold-storage') {
+		return 'main';
+	}
+	return 'neutral';
+}
+
+function textColorForTone(tone: RowTone): string {
+	if (tone === 'storage') {
+		return '0.106 0.369 0.125 rg';
+	}
+	if (tone === 'main') {
+		return '0.051 0.278 0.631 rg';
+	}
+	return '0 g';
 }
 
 function escapePdfText(value: string): string {
@@ -117,7 +162,7 @@ function buildPageContent(params: {
 	title: string;
 	subtitle: string;
 	headers: string[];
-	rows: string[][];
+	rows: PrintableRow[];
 	pageNumber: number;
 	totalPages: number;
 }): string {
@@ -125,7 +170,7 @@ function buildPageContent(params: {
 	const topY = 770;
 	const tableTopY = 710;
 	const rowHeight = 18;
-	const colWidths = [136, 56, 250, 70];
+	const colWidths = [170, 280, 92];
 	const tableWidth = colWidths.reduce((total, current) => total + current, 0);
 	const xPositions = [marginLeft];
 	for (const width of colWidths) {
@@ -169,12 +214,18 @@ function buildPageContent(params: {
 	for (let rowIndex = 0; rowIndex < params.rows.length; rowIndex += 1) {
 		const row = params.rows[rowIndex];
 		const baselineY = headerBottom - rowHeight * rowIndex - 13;
-		for (let col = 0; col < row.length; col += 1) {
+		for (let col = 0; col < row.cells.length; col += 1) {
 			const textX = xPositions[col] + 3;
+			if (col === 0 || col === 2) {
+				commands.push(textColorForTone(row.tone));
+			} else {
+				commands.push('0 g');
+			}
 			commands.push(
-				`BT /F1 9 Tf 1 0 0 1 ${textX} ${baselineY} Tm (${escapePdfText(row[col])}) Tj ET`
+				`BT /F1 9 Tf 1 0 0 1 ${textX} ${baselineY} Tm (${escapePdfText(row.cells[col])}) Tj ET`
 			);
 		}
+		commands.push('0 g');
 	}
 
 	return commands.join('\n');
@@ -271,7 +322,10 @@ export const GET: RequestHandler = async ({ url }) => {
 			const meta = readBarBottleMeta(item);
 
 			return {
-				displayName: item.displayName ?? bottle?.name ?? 'Unknown bottle',
+				displayName: resolveReportBottleName({
+					bottleName: bottle?.name,
+					displayName: item.displayName
+				}),
 				location: meta.location || 'Unknown area',
 				locationType: meta.locationType,
 				currentCount: counts.currentCount,
@@ -303,58 +357,68 @@ export const GET: RequestHandler = async ({ url }) => {
 			});
 		});
 
-	const headers = ['Area', 'On Hand', 'Bottle', 'Type'];
-	const printableRows: string[][] = [];
+	const headers = ['Area', 'Bottle', 'Type'];
+	const printableRows: PrintableRow[] = [];
 	let currentAreaKey = '';
 	let areaSubtotal = 0;
+	let currentAreaTone: RowTone = 'neutral';
 
 	for (const row of rows) {
 		const areaTypeLabel = locationTypeLabel(row.locationType);
 		const areaKey = `${row.location}::${areaTypeLabel}`;
 		if (currentAreaKey && currentAreaKey !== areaKey) {
 			const [lastArea, lastType] = currentAreaKey.split('::');
-			printableRows.push([
-				fitText(`${lastArea} (${lastType})`, 25),
-				formatCount(areaSubtotal),
-				'Area subtotal',
-				''
-			]);
+			printableRows.push({
+				cells: [
+					fitText(`${lastArea} (${lastType})`, 25),
+					'Area subtotal',
+					fitText(formatCount(areaSubtotal), 14)
+				],
+				tone: currentAreaTone
+			});
 			areaSubtotal = 0;
 		}
 
-		printableRows.push([
-			fitText(row.location, 18),
-			formatCount(row.currentCount),
-			fitText(row.displayName, 40),
-			fitText(areaTypeLabel, 14)
-		]);
+		const tone = rowToneForLocationType(row.locationType);
+		printableRows.push({
+			cells: [
+				fitText(`${row.location} (${formatCount(row.currentCount)})`, 25),
+				fitText(row.displayName, 40),
+				fitText(`${areaTypeLabel} (${formatCount(row.currentCount)})`, 14)
+			],
+			tone
+		});
 		areaSubtotal += row.currentCount;
 		currentAreaKey = areaKey;
+		currentAreaTone = tone;
 	}
 
 	if (currentAreaKey) {
 		const [lastArea, lastType] = currentAreaKey.split('::');
-		printableRows.push([
-			fitText(`${lastArea} (${lastType})`, 25),
-			formatCount(areaSubtotal),
-			'Area subtotal',
-			''
-		]);
+		printableRows.push({
+			cells: [
+				fitText(`${lastArea} (${lastType})`, 25),
+				'Area subtotal',
+				fitText(formatCount(areaSubtotal), 14)
+			],
+			tone: currentAreaTone
+		});
 	}
 
 	const rowsPerPage = 30;
-	const pagedRows: string[][][] = [];
+	const pagedRows: PrintableRow[][] = [];
 	for (let i = 0; i < printableRows.length; i += rowsPerPage) {
 		pagedRows.push(printableRows.slice(i, i + rowsPerPage));
 	}
 	if (pagedRows.length === 0) {
-		pagedRows.push([['No bottles found for this selection.', '', '', '']]);
+		pagedRows.push([
+			{ cells: ['No bottles found for this selection.', '', ''], tone: 'neutral' }
+		]);
 	}
 
 	const filterLabel = selectedStorageFilter ? locationTypeLabel(selectedStorageFilter) : 'All areas';
 	const title = `${bar.name} - Bottle Inventory Report`;
-	const totalOnHand = rows.reduce((sum, row) => sum + row.currentCount, 0);
-	const subtitle = `Filter: ${filterLabel} | On hand total: ${formatCount(totalOnHand)} | Generated: ${new Date().toISOString().slice(0, 10)}`;
+	const subtitle = `Filter: ${filterLabel} | Generated: ${new Date().toISOString().slice(0, 10)}`;
 
 	const pageContents = pagedRows.map((pageRows, index) =>
 		buildPageContent({

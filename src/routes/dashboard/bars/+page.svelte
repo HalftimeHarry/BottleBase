@@ -17,9 +17,11 @@
 			}>;
 			selectedBarId: string;
 			selectedStorageFilter: string;
+			selectedCategoryFilter: string;
 			selectedSortKey: SortKey;
 			selectedSortDirection: 'asc' | 'desc';
 			selectedBarStorageTypes: string[];
+			selectedBarCategories: string[];
 			stockUpdated: boolean;
 			generatedCount: number;
 			addedCount: number;
@@ -40,6 +42,7 @@
 				parLevel: number;
 				reorderLevel: number;
 				inventoryMode: string;
+				imageUrl: string | null;
 			}>;
 			setupError: string | null;
 		};
@@ -137,6 +140,7 @@
 	let editingRows = $state<Record<string, boolean>>({});
 	let sortKey = $state<SortKey>('bottle');
 	let sortDirection = $state<'asc' | 'desc'>('asc');
+	let bottleSearchQuery = $state('');
 	let sortInitialized = $state(false);
 	let step1Expanded = $state(data.bars.length === 0);
 	let isSubmittingCreate = $state(false);
@@ -148,6 +152,18 @@
 	let duplicateFromBottleLabel = $state('');
 	let addBottleLocation = $state('Bar');
 	let addBottleLocationType = $state<StorageAreaType>('well');
+	let showEditBottleModal = $state(false);
+	let editBarBottleId = $state('');
+	let editBottleLabel = $state('');
+	let editLocation = $state('');
+	let editLocationType = $state('well');
+	let editInventoryMode = $state('simple-counts');
+	let editCurrentCount = $state('0');
+	let editParLevel = $state('0');
+	let editReorderLevel = $state('0');
+	let showBottleImageModal = $state(false);
+	let activeBottleImageUrl = $state('');
+	let activeBottleImageLabel = $state('');
 
 	function addStorageArea(): void {
 		storageAreas = [...storageAreas, { id: nextAreaId(), name: '', type: 'backbar' }];
@@ -377,6 +393,36 @@
 		showAddBottleModal = false;
 	}
 
+	function openEditBottleModal(bottle: (typeof data.selectedBarBottles)[number]): void {
+		editBarBottleId = bottle.id;
+		editBottleLabel = `${bottle.displayName} (${bottle.brand})`;
+		editLocation = bottle.location;
+		editLocationType = bottle.locationType;
+		editInventoryMode = bottle.inventoryMode;
+		editCurrentCount = String(bottle.currentCount);
+		editParLevel = String(bottle.parLevel);
+		editReorderLevel = String(bottle.reorderLevel);
+		showEditBottleModal = true;
+	}
+
+	function closeEditBottleModal(): void {
+		showEditBottleModal = false;
+		editBarBottleId = '';
+		editBottleLabel = '';
+	}
+
+	function openBottleImageModal(imageUrl: string, bottleLabel: string): void {
+		activeBottleImageUrl = imageUrl;
+		activeBottleImageLabel = bottleLabel;
+		showBottleImageModal = true;
+	}
+
+	function closeBottleImageModal(): void {
+		showBottleImageModal = false;
+		activeBottleImageUrl = '';
+		activeBottleImageLabel = '';
+	}
+
 	function isEditingRow(rowId: string): boolean {
 		return Boolean(editingRows[rowId]);
 	}
@@ -403,6 +449,19 @@
 		return option?.label ?? value;
 	}
 
+	function isStorageType(value: string): boolean {
+		return value === 'overflow';
+	}
+
+	function isMainType(value: string): boolean {
+		return value === 'well' || value === 'backbar' || value === 'cold-storage';
+	}
+
+	function isStorageAreaName(value: string): boolean {
+		const normalized = value.trim().toLowerCase();
+		return normalized.includes('storage') || normalized.includes('overflow');
+	}
+
 	function inventoryModeLabel(value: string): string {
 		if (value === 'detailed-tracking') {
 			return 'Detailed';
@@ -410,13 +469,24 @@
 		return 'Full';
 	}
 
-	function barsUrl(params: { bar?: string; storage?: string } = {}): string {
+	function formatBottleAmount(value: number): string {
+		if (Number.isInteger(value)) {
+			return String(value);
+		}
+
+		return value.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+	}
+
+	function barsUrl(params: { bar?: string; storage?: string; category?: string } = {}): string {
 		const query = new URLSearchParams();
 		if (params.bar) {
 			query.set('bar', params.bar);
 		}
 		if (params.storage) {
 			query.set('storage', params.storage);
+		}
+		if (params.category) {
+			query.set('category', params.category);
 		}
 		query.set('sort', sortKey);
 		query.set('dir', sortDirection);
@@ -531,7 +601,16 @@
 	const selectedSortKeyFromData = $derived(data.selectedSortKey);
 	const selectedSortDirectionFromData = $derived(data.selectedSortDirection);
 	const sortedSelectedBarBottles = $derived.by(() => {
-		const rows = [...data.selectedBarBottles];
+		const query = bottleSearchQuery.trim().toLowerCase();
+		const rows = data.selectedBarBottles.filter((item) => {
+			if (!query) {
+				return true;
+			}
+
+			return [item.displayName, item.brand, item.category].some((value) =>
+				value.toLowerCase().includes(query)
+			);
+		});
 		const direction = sortDirection === 'asc' ? 1 : -1;
 
 		rows.sort((left, right) => {
@@ -559,7 +638,7 @@
 			return comparison * direction;
 		});
 
-		return rows;
+		return [...rows];
 	});
 
 	$effect(() => {
@@ -1124,7 +1203,7 @@
 									<td data-label="Stocked bottles">{bar.stockedCount}</td>
 									<td data-label="Manage">
 										<div class="manage-actions">
-											<a class="table-link" href={barsUrl({ bar: bar.id })}>Manage</a>
+											<a class="table-link manage-link-button" href={barsUrl({ bar: bar.id })}>Manage</a>
 											<form
 												method="POST"
 												action="?/deleteBar"
@@ -1158,10 +1237,21 @@
 				<h2>Adjust Bottles For Selected Bar</h2>
 				<p class="panel-copy">Filter by storage type, then update counts and placement per bottle.</p>
 
+				<div class="search-row">
+					<label for="bar-bottle-search" class="search-label">Search bottles</label>
+					<input
+						id="bar-bottle-search"
+						type="search"
+						bind:value={bottleSearchQuery}
+						placeholder="Search by bottle, brand, or category"
+						autocomplete="off"
+					/>
+				</div>
+
 				<div class="filter-row">
 					<a
 						class="table-link"
-						href={barsUrl({ bar: data.selectedBarId })}
+						href={barsUrl({ bar: data.selectedBarId, category: data.selectedCategoryFilter })}
 						aria-current={data.selectedStorageFilter ? undefined : 'page'}
 					>
 						All areas
@@ -1169,7 +1259,7 @@
 					{#each data.selectedBarStorageTypes as type}
 						<a
 							class="table-link"
-							href={barsUrl({ bar: data.selectedBarId, storage: type })}
+							href={barsUrl({ bar: data.selectedBarId, storage: type, category: data.selectedCategoryFilter })}
 							aria-current={data.selectedStorageFilter === type ? 'page' : undefined}
 						>
 							{locationTypeLabel(type)}
@@ -1191,6 +1281,25 @@
 							<button type="submit" class="secondary tiny">PDF report</button>
 						</form>
 					</div>
+				</div>
+
+				<div class="filter-row filter-row-categories">
+					<a
+						class="table-link filter-badge"
+						href={barsUrl({ bar: data.selectedBarId, storage: data.selectedStorageFilter })}
+						aria-current={data.selectedCategoryFilter ? undefined : 'page'}
+					>
+						All
+					</a>
+					{#each data.selectedBarCategories as category}
+						<a
+							class="table-link filter-badge"
+							href={barsUrl({ bar: data.selectedBarId, storage: data.selectedStorageFilter, category })}
+							aria-current={data.selectedCategoryFilter.toLowerCase() === category.toLowerCase() ? 'page' : undefined}
+						>
+							{category}
+						</a>
+					{/each}
 				</div>
 
 				<div class="table-wrap">
@@ -1272,7 +1381,23 @@
 									<tr id={`bar-bottle-row-${bottle.id}`} class="bar-bottle-row">
 										<td data-label="Bottle">
 											<div class="bottle-name">{bottle.displayName}</div>
-											<div class="bottle-meta">{bottle.brand} • {bottle.category}</div>
+											<div class="bottle-meta-row">
+												<div class="bottle-meta">{bottle.brand} • {bottle.category}</div>
+												<div class="bottle-quick-stats" aria-label="Bottle summary stats">
+													<span>Par {formatBottleAmount(bottle.parLevel)}</span>
+													<span>Count {inventoryModeLabel(bottle.inventoryMode)}</span>
+												</div>
+											</div>
+											{#if bottle.imageUrl}
+												<button
+													type="button"
+													class="bottle-thumb-button"
+													onclick={() => openBottleImageModal(bottle.imageUrl, bottle.displayName)}
+													aria-label={`Preview ${bottle.displayName} image`}
+												>
+													<img class="bottle-thumb" src={bottle.imageUrl} alt={`${bottle.displayName} bottle`} loading="lazy" />
+												</button>
+											{/if}
 										</td>
 										<td colspan="7" class="bar-bottle-controls">
 											<form method="POST" action="?/updateStock" class="inline-edit-form">
@@ -1282,129 +1407,71 @@
 														<input type="hidden" name="sort" value={sortKey} />
 														<input type="hidden" name="dir" value={sortDirection} />
 												<div class="inline-edit-grid">
-													<div class="inline-cell" data-mobile-label="Area">
-														{#if isEditingRow(bottle.id)}
-															<input name="location" value={bottle.location} aria-label="Area name" />
-														{:else}
-															<div class="value-badge" aria-label="Area name">{bottle.location}</div>
-														{/if}
+													<div class="inline-cell inline-cell-area">
+														<div class="area-badge-group" aria-label="Area summary">
+															<span
+																class="value-badge"
+																class:value-badge-main={!isStorageAreaName(bottle.location) && isMainType(bottle.locationType)}
+																class:value-badge-storage={isStorageAreaName(bottle.location) || isStorageType(bottle.locationType)}
+															>
+																{bottle.location} ({formatBottleAmount(bottle.currentCount)})
+															</span>
+															<span
+																class="value-badge"
+																class:value-badge-main={isMainType(bottle.locationType)}
+																class:value-badge-storage={isStorageType(bottle.locationType)}
+															>
+																{locationTypeLabel(bottle.locationType)} ({formatBottleAmount(bottle.currentCount)})
+															</span>
+														</div>
 													</div>
 
-													<div class="inline-cell inline-cell-type" data-mobile-label="Type">
-														{#if isEditingRow(bottle.id)}
-															<select name="locationType" aria-label="Area type">
-																{#each LOCATION_TYPE_OPTIONS as option}
-																	<option value={option.value} selected={bottle.locationType === option.value}
-																		>{option.label}</option
-																	>
-																{/each}
-															</select>
-														{:else}
-															<div class="value-badge" aria-label="Area type">{locationTypeLabel(bottle.locationType)}</div>
-														{/if}
-													</div>
-
-													<div class="inline-cell" data-mobile-label="Current">
-														{#if isEditingRow(bottle.id)}
-															<input name="currentCount" type="number" min="0" step="0.25" value={bottle.currentCount} aria-label="Current count" />
-														{:else}
-															<div class="value-badge" aria-label="Current count">{bottle.currentCount}</div>
-														{/if}
-													</div>
-
-													<div class="inline-cell" data-mobile-label="Par">
-														{#if isEditingRow(bottle.id)}
-															<input name="parLevel" type="number" min="0" step="0.25" value={bottle.parLevel} aria-label="Par level" />
-														{:else}
-															<div class="value-badge" aria-label="Par level">{bottle.parLevel}</div>
-														{/if}
-													</div>
-
-													<div class="inline-cell" data-mobile-label="Reorder">
-														{#if isEditingRow(bottle.id)}
-															<input name="reorderLevel" type="number" min="0" step="0.25" value={bottle.reorderLevel} aria-label="Reorder level" />
-														{:else}
-															<div class="value-badge" aria-label="Reorder level">{bottle.reorderLevel}</div>
-														{/if}
-													</div>
-
-													<div class="inline-cell" data-mobile-label="Count">
-														{#if isEditingRow(bottle.id)}
-															<select name="inventoryMode" aria-label="Inventory mode">
-																<option value="simple-counts" selected={bottle.inventoryMode === 'simple-counts'}>Full</option>
-																<option value="detailed-tracking" selected={bottle.inventoryMode === 'detailed-tracking'}>Detailed</option>
-															</select>
-														{:else}
-															<div class="value-badge" aria-label="Inventory mode">{inventoryModeLabel(bottle.inventoryMode)}</div>
-														{/if}
-													</div>
-
-													<div class="inline-cell inline-cell-actions" data-mobile-label="Actions">
+													<div class="inline-cell inline-cell-actions">
 														<div class="row-action">
-																{#if isEditingRow(bottle.id)}
-																	<button type="submit" class="icon-button save-button" aria-label="Save row" title="Save">
-																		<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-																			<path
-																				fill="currentColor"
-																				d="M5 3h11l3 3v15H5V3zm2 2v4h8V5H7zm0 14h10v-6H7v6z"
-																			/>
-																		</svg>
-																	</button>
-																	<button type="button" class="tiny secondary" onclick={() => stopEditingRow(bottle.id)}>
-																		Cancel
-																	</button>
-																{:else}
-																	<button type="button" class="tiny secondary" onclick={() => startEditingRow(bottle.id)}>
-																		Edit
-																	</button>
-																{/if}
+																<button type="button" class="tiny edit-button" onclick={() => openEditBottleModal(bottle)}>
+																	Edit
+																</button>
 																<button
-															type="button"
-															class="tiny icon-button add-button"
-															aria-label="Duplicate to new area"
-															title="Duplicate to new area"
-															onclick={() =>
-																openAddBottleModal({
-																	barBottleId: bottle.id,
+																type="button"
+																class="tiny icon-button add-button"
+																aria-label="Duplicate to new area"
+																title="Duplicate to new area"
+																onclick={() =>
+																	openAddBottleModal({
+																		barBottleId: bottle.id,
 																		bottleId: bottle.bottleId,
-																	label: `${bottle.displayName} (${bottle.brand})`,
-																	location: bottle.location,
-																	locationType: bottle.locationType as StorageAreaType
-																})}
-														>
-															<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-																<path
-																	fill="currentColor"
-																	d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"
-																/>
-															</svg>
-														</button>
+																		label: `${bottle.displayName} (${bottle.brand})`,
+																		location: bottle.location,
+																		locationType: bottle.locationType as StorageAreaType
+																	})}
+															>
+																<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+																	<path
+																		fill="currentColor"
+																		d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"
+																	/>
+																</svg>
+															</button>
 															<button
-															type="submit"
-															formaction="?/addBottleToStorage"
-															formmethod="POST"
-															class="tiny icon-button storage-button"
-															aria-label="Add to storage"
-															title="Add to storage"
-														>
-															<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-																<path
-																	fill="currentColor"
-																	d="M3 7h18l-1.2 13.2A2 2 0 0 1 17.81 22H6.19a2 2 0 0 1-1.99-1.8L3 7zm4 3v8h2v-8H7zm4 0v8h2v-8h-2zm4 0v8h2v-8h-2zM8 3h8v2H8V3z"
-																/>
-															</svg>
-														</button>
-															{#if (form?.updatedBarBottleId ?? data.updatedBarBottleId) === bottle.id}
-																{#if (form?.rowStatus ?? data.rowStatus) === 'saved'}
-																	<p class="row-feedback row-feedback-success" role="status">Saved</p>
-																{:else if (form?.rowStatus ?? data.rowStatus) === 'added'}
-																	<p class="row-feedback row-feedback-success" role="status">Duplicated</p>
-																{:else if (form?.rowStatus ?? data.rowStatus) === 'stored'}
-																	<p class="row-feedback row-feedback-success" role="status">Storage</p>
-																{:else if (form?.rowStatus ?? data.rowStatus) === 'error'}
-																	<p class="row-feedback row-feedback-error" role="alert">Could not save</p>
-																{/if}
-															{/if}
+																type="submit"
+																formaction="?/deleteBarBottle"
+																formmethod="POST"
+																class="tiny icon-button delete-button"
+																aria-label="Delete bottle from bar"
+																title="Delete bottle from bar"
+																onclick={(event) => {
+																	if (!confirm(`Delete ${bottle.displayName} from this bar?`)) {
+																		event.preventDefault();
+																	}
+																}}
+															>
+																<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+																	<path
+																		fill="currentColor"
+																		d="M3 7h18l-1.2 13.2A2 2 0 0 1 17.81 22H6.19a2 2 0 0 1-1.99-1.8L3 7zm4 3v8h2v-8H7zm4 0v8h2v-8h-2zm4 0v8h2v-8h-2zM8 3h8v2H8V3z"
+																	/>
+																</svg>
+															</button>
 														</div>
 													</div>
 												</div>
@@ -1417,6 +1484,86 @@
 					</table>
 				</div>
 			</section>
+		{/if}
+
+		{#if showEditBottleModal && data.selectedBarId && editBarBottleId}
+			<div
+				class="modal-backdrop"
+				role="presentation"
+				onmousedown={(event) => {
+					if (event.target === event.currentTarget) {
+						closeEditBottleModal();
+					}
+				}}
+			>
+				<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="edit-bottle-title" tabindex="-1">
+					<h3 id="edit-bottle-title">Edit Bottle</h3>
+					<form method="POST" action="?/updateStock" class="modal-form">
+						<input type="hidden" name="barBottleId" value={editBarBottleId} />
+						<input type="hidden" name="selectedBarId" value={data.selectedBarId} />
+						<input type="hidden" name="selectedStorageFilter" value={data.selectedStorageFilter} />
+						<input type="hidden" name="sort" value={sortKey} />
+						<input type="hidden" name="dir" value={sortDirection} />
+
+						<label>
+							<span>Bottle</span>
+							<input value={editBottleLabel} readonly />
+						</label>
+
+						<div class="modal-grid">
+							<label>
+								<span>Area name</span>
+								<input name="location" bind:value={editLocation} required />
+							</label>
+							<label>
+								<span>Area type</span>
+								<select name="locationType" bind:value={editLocationType}>
+									{#each LOCATION_TYPE_OPTIONS as option}
+										<option value={option.value}>{option.label}</option>
+									{/each}
+								</select>
+							</label>
+							<label>
+								<span>Current</span>
+								<input name="currentCount" type="number" min="0" step="0.25" bind:value={editCurrentCount} required />
+							</label>
+							<label>
+								<span>Par</span>
+								<input name="parLevel" type="number" min="0" step="0.25" bind:value={editParLevel} required />
+							</label>
+							<label>
+								<span>Reorder</span>
+								<input name="reorderLevel" type="number" min="0" step="0.25" bind:value={editReorderLevel} required />
+							</label>
+							<label>
+								<span>Count mode</span>
+								<select name="inventoryMode" bind:value={editInventoryMode}>
+									<option value="simple-counts">Full</option>
+									<option value="detailed-tracking">Detailed</option>
+								</select>
+							</label>
+						</div>
+
+						<div class="modal-actions">
+							<button
+								type="submit"
+								class="danger"
+								formaction="?/deleteBarBottle"
+								formmethod="POST"
+								onclick={(event) => {
+									if (!confirm(`Delete ${editBottleLabel} from this bar?`)) {
+										event.preventDefault();
+									}
+								}}
+							>
+								Delete
+							</button>
+							<button type="button" class="secondary" onclick={closeEditBottleModal}>Cancel</button>
+							<button type="submit">Save</button>
+						</div>
+					</form>
+				</div>
+			</div>
 		{/if}
 
 		{#if showAddBottleModal && data.selectedBarId && duplicateFromBarBottleId}
@@ -1463,6 +1610,32 @@
 							<button type="submit" disabled={!addBottleLocation.trim()}>Duplicate</button>
 						</div>
 					</form>
+				</div>
+			</div>
+		{/if}
+
+		{#if showBottleImageModal && activeBottleImageUrl}
+			<div
+				class="modal-backdrop"
+				role="presentation"
+				tabindex="-1"
+				onmousedown={(event) => {
+					if (event.target === event.currentTarget) {
+						closeBottleImageModal();
+					}
+				}}
+				onkeydown={(event) => {
+					if (event.key === 'Escape') {
+						closeBottleImageModal();
+					}
+				}}
+			>
+				<div class="image-modal-card" role="dialog" aria-modal="true" aria-labelledby="bottle-image-title">
+					<div class="image-modal-head">
+						<h3 id="bottle-image-title">{activeBottleImageLabel}</h3>
+						<button type="button" class="secondary tiny" onclick={closeBottleImageModal}>Close</button>
+					</div>
+					<img class="bottle-preview-image" src={activeBottleImageUrl} alt={`${activeBottleImageLabel} bottle`} />
 				</div>
 			</div>
 		{/if}
@@ -1781,6 +1954,21 @@
 		margin-top: 0.8rem;
 	}
 
+	.search-row {
+		display: grid;
+		gap: 0.35rem;
+		margin-top: 0.8rem;
+		max-width: 24rem;
+	}
+
+	.search-label {
+		font-size: 0.82rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: color-mix(in srgb, var(--bb-ink) 68%, var(--bb-accent) 32%);
+	}
+
 	.generate-form {
 		margin-left: auto;
 	}
@@ -1803,8 +1991,56 @@
 		margin: 0;
 	}
 
+	.manage-link-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.4rem 0.75rem;
+		border-radius: 999px;
+		font-size: 0.82rem;
+		font-weight: 700;
+		line-height: 1;
+		text-decoration: none;
+		color: #ffffff;
+		background: #166534;
+	}
+
+	.manage-link-button:hover {
+		background: #14532d;
+	}
+
 	.filter-row .table-link[aria-current='page'] {
 		text-decoration: underline;
+	}
+
+	.filter-row-categories .filter-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.3rem 0.7rem;
+		border-radius: 999px;
+		border: 1px solid rgba(73, 41, 18, 0.2);
+		background: rgba(255, 255, 255, 0.8);
+		text-decoration: none;
+		font-size: 0.82rem;
+		font-weight: 700;
+		line-height: 1.1;
+		text-transform: lowercase;
+	}
+
+	.filter-row-categories .filter-badge:first-child {
+		text-transform: none;
+	}
+
+	.filter-row-categories .filter-badge:hover {
+		background: rgba(255, 255, 255, 0.92);
+	}
+
+	.filter-row-categories .filter-badge[aria-current='page'] {
+		background: #166534;
+		border-color: #166534;
+		color: #ffffff;
+		text-decoration: none;
 	}
 
 	.inline-edit-form {
@@ -1825,6 +2061,13 @@
 
 	.inline-cell {
 		min-width: 0;
+	}
+
+	.area-badge-group {
+		display: inline-flex;
+		gap: 0.45rem;
+		flex-wrap: nowrap;
+		align-items: center;
 	}
 
 	.inline-cell::before {
@@ -1860,12 +2103,39 @@
 		background: #15803d;
 	}
 
-	.add-button {
+	.edit-button {
 		background: #1d4ed8;
+		color: #ffffff;
 	}
 
-	.storage-button {
-		background: #475569;
+	.edit-button:hover {
+		background: #1e40af;
+	}
+
+	.add-button {
+		background: #15803d;
+	}
+
+	.add-button:hover {
+		background: #166534;
+	}
+
+	.delete-button {
+		background: #b91c1c;
+		color: #ffffff;
+	}
+
+	.delete-button:hover {
+		background: #991b1b;
+	}
+
+	.modal-actions .danger {
+		background: #b91c1c;
+		color: #ffffff;
+	}
+
+	.modal-actions .danger:hover {
+		background: #991b1b;
 	}
 
 	.justify-between {
@@ -1931,6 +2201,16 @@
 		background: transparent;
 		font-weight: 600;
 		white-space: normal;
+	}
+
+	.bar-table tbody tr.bar-bottle-row .value-badge.value-badge-main {
+		color: #1e3a8a;
+		font-weight: 700;
+	}
+
+	.bar-table tbody tr.bar-bottle-row .value-badge.value-badge-storage {
+		color: #166534;
+		font-weight: 700;
 	}
 
 	.modal-backdrop {
@@ -2034,6 +2314,14 @@
 		border-bottom: none;
 	}
 
+	.bar-table tbody tr.bar-bottle-row:nth-child(odd) {
+		background: rgba(255, 255, 255, 0.72);
+	}
+
+	.bar-table tbody tr.bar-bottle-row:nth-child(even) {
+		background: rgba(239, 226, 207, 0.55);
+	}
+
 	.bottle-name {
 		font-weight: 700;
 	}
@@ -2042,6 +2330,87 @@
 		margin-top: 0.2rem;
 		font-size: 0.84rem;
 		color: color-mix(in srgb, var(--bb-ink) 74%, var(--bb-accent) 26%);
+	}
+
+	.bottle-meta-row {
+		margin-top: 0.2rem;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+
+	.bottle-quick-stats {
+		display: inline-flex;
+		gap: 0.45rem;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		font-size: 0.74rem;
+		font-weight: 700;
+		color: color-mix(in srgb, var(--bb-ink) 78%, var(--bb-accent) 22%);
+	}
+
+	.bottle-quick-stats span {
+		padding: 0.15rem 0.45rem;
+		border-radius: 999px;
+		background: rgba(73, 41, 18, 0.08);
+		border: 1px solid rgba(73, 41, 18, 0.12);
+	}
+
+	.bottle-thumb {
+		display: block;
+		margin-top: 0.5rem;
+		width: 4.5rem;
+		height: 4.5rem;
+		object-fit: cover;
+		border-radius: 0.65rem;
+		border: 1px solid rgba(73, 41, 18, 0.16);
+		background: rgba(255, 255, 255, 0.55);
+	}
+
+	.bottle-thumb-button {
+		padding: 0;
+		margin-top: 0.5rem;
+		border: 0;
+		border-radius: 0.65rem;
+		background: transparent;
+		cursor: zoom-in;
+	}
+
+	.bottle-thumb-button .bottle-thumb {
+		margin-top: 0;
+	}
+
+	.image-modal-card {
+		width: min(46rem, 92vw);
+		padding: 1rem;
+		border-radius: 1rem;
+		background: #fff;
+		box-shadow: 0 18px 40px rgba(15, 15, 20, 0.35);
+		display: grid;
+		gap: 0.8rem;
+	}
+
+	.image-modal-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+
+	.image-modal-head h3 {
+		margin: 0;
+		font-size: 1.05rem;
+	}
+
+	.bottle-preview-image {
+		display: block;
+		width: 100%;
+		max-height: min(76vh, 42rem);
+		object-fit: contain;
+		border-radius: 0.8rem;
+		border: 1px solid rgba(73, 41, 18, 0.16);
+		background: rgba(250, 248, 244, 0.95);
 	}
 
 	.is-disabled {
@@ -2147,6 +2516,15 @@
 			gap: 1.35rem;
 		}
 
+		.bottle-meta-row {
+			flex-direction: column;
+			align-items: flex-start;
+		}
+
+		.bottle-quick-stats {
+			justify-content: flex-start;
+		}
+
 		.bottle-table tbody td::before,
 		.bar-table tbody td::before {
 			content: attr(data-label);
@@ -2159,6 +2537,8 @@
 
 		.bar-table tbody tr.bar-bottle-row {
 			padding: 0.9rem;
+			border-radius: 0.9rem;
+			margin-bottom: 0.55rem;
 		}
 
 		.bar-table tbody tr.bar-bottle-row td[data-label='Bottle'] {
@@ -2202,6 +2582,16 @@
 
 		.bar-table tbody tr.bar-bottle-row .inline-cell-type::before {
 			color: #fff;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-cell-area,
+		.bar-table tbody tr.bar-bottle-row .inline-cell-actions {
+			grid-template-columns: 1fr;
+		}
+
+		.bar-table tbody tr.bar-bottle-row .inline-cell-area::before,
+		.bar-table tbody tr.bar-bottle-row .inline-cell-actions::before {
+			display: none;
 		}
 
 		.bar-table tbody tr.bar-bottle-row .inline-cell-actions {
